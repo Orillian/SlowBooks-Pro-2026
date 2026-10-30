@@ -10,7 +10,12 @@ Two entries on the account are a possible duplicate when:
 - they are on the same side (both money out, or both money in) for the
   same amount, to the cent;
 - their dates are at most WINDOW_DAYS apart;
-- their payees are the same or similar (``similar_payees``).
+- their payees are the same or similar (``similar_payees``);
+- they are not both from QuickBooks Desktop's Transaction Detail by
+  Account import (#663): QuickBooks already keeps its transactions apart
+  (two transfers with no name, of one amount, a day apart), and the import
+  skips a second copy of the same file. An imported entry still pairs with
+  a typed, bank-feed or other entry.
 
 A group is anchored on its first (earliest) entry: every later entry
 within WINDOW_DAYS of that anchor, with a payee similar to the anchor's,
@@ -42,6 +47,7 @@ from app.models.transactions import Transaction, TransactionLine
 from app.services.account_label import account_label
 from app.services.bank_register import account_register
 from app.services.duplicate_detection import normalize_name
+from app.services.entry_text import QB_LEDGER_SOURCE
 
 # "Within a few days of each other": a feed line and the same payment keyed
 # by hand land a day or two apart; a weekly or monthly bill never does.
@@ -284,6 +290,8 @@ def possible_duplicates(
                 if (days[j] - days[i]).days > WINDOW_DAYS:
                     break  # rows are date-sorted: nothing later is nearer
                 if used[j] or rows[j]["transaction_id"] == anchor["transaction_id"]:
+                    continue
+                if anchor["source_type"] == rows[j]["source_type"] == QB_LEDGER_SOURCE:
                     continue
                 if similar_payees(anchor["payee"], rows[j]["payee"]):
                     members.append(rows[j])
