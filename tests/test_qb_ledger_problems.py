@@ -181,8 +181,13 @@ def test_an_accepted_transaction_posts_its_difference_once(
     _chart(db_session)
     data = _upload(client, UNBALANCED, {"unbalanced": [CHECK_1002]})
     assert data["errors"] == [] and data["journals"] == 8
-    assert data["accepted"] == {"unbalanced": 1, "accounts": [], "cut_off": False}
-    assert data["left_out"] == {"unbalanced": 0, "missing_account": 0}
+    assert data["accepted"] == {
+        "unbalanced": 1,
+        "accounts": [],
+        "cut_off": False,
+        "replaced": 0,
+    }
+    assert data["left_out"] == {"unbalanced": 0, "missing_account": 0, "replaces": 0}
     assert data["differences_account"] == "3950 Import Differences"
     differences = _account(db_session, "Import Differences")
     assert differences.account_number == "3950"
@@ -216,8 +221,13 @@ def test_a_transaction_left_out_stays_out_until_a_later_upload(
     _chart(db_session)
     data = _upload(client, UNBALANCED, {})
     assert data["journals"] == 7
-    assert data["accepted"] == {"unbalanced": 0, "accounts": [], "cut_off": False}
-    assert data["left_out"] == {"unbalanced": 1, "missing_account": 0}
+    assert data["accepted"] == {
+        "unbalanced": 0,
+        "accounts": [],
+        "cut_off": False,
+        "replaced": 0,
+    }
+    assert data["left_out"] == {"unbalanced": 1, "missing_account": 0, "replaces": 0}
     assert "differences_account" not in data
     assert _account(db_session, "Import Differences") is None
     # the same file again asks about it alone
@@ -385,7 +395,7 @@ def test_an_account_left_out_leaves_out_what_touches_it(
     _chart_without(db_session, "Card Fees")
     data = _upload(client, FIXTURE.read_bytes(), {"accounts": {}})
     assert data["journals"] == 6
-    assert data["left_out"] == {"unbalanced": 0, "missing_account": 2}
+    assert data["left_out"] == {"unbalanced": 0, "missing_account": 2, "replaces": 0}
     assert _account(db_session, "Card Fees") is None
     # made later, the next upload brings those two in
     db_session.add(Account(name="Card Fees", account_type=AccountType.EXPENSE))
@@ -427,7 +437,7 @@ def test_a_parents_own_section_asks_for_the_parent(client, db_session, seed_acco
         client, _other_sections_report(2), {"accounts": {"Office Expense": "expense"}}
     )
     assert data["journals"] == 1
-    assert data["left_out"] == {"unbalanced": 0, "missing_account": 1}
+    assert data["left_out"] == {"unbalanced": 0, "missing_account": 1, "replaces": 0}
     office = _account(db_session, "Office Expense")
     (check,) = _imported(db_session)
     assert check.reference == "101"
@@ -593,7 +603,12 @@ def test_a_notice_accepted_imports_what_is_there(client, db_session, seed_accoun
     _chart(db_session)
     data = _upload(client, EDITED, {"cut_off": True})
     assert data["journals"] == 8 and data["errors"] == []
-    assert data["accepted"] == {"unbalanced": 0, "accounts": [], "cut_off": True}
+    assert data["accepted"] == {
+        "unbalanced": 0,
+        "accounts": [],
+        "cut_off": True,
+        "replaced": 0,
+    }
 
 
 def test_a_notice_not_accepted_imports_nothing(client, db_session, seed_accounts):
@@ -623,7 +638,7 @@ def test_a_file_cut_off_mid_section_says_so(client, db_session, seed_accounts):
     # what is there, without the two checks
     data = _upload(client, _cut_after("Scheduling app"), {"cut_off": True})
     assert data["journals"] == 6
-    assert data["left_out"] == {"unbalanced": 2, "missing_account": 0}
+    assert data["left_out"] == {"unbalanced": 2, "missing_account": 0, "replaces": 0}
 
 
 def test_a_row_that_cannot_be_read_refuses_the_file(client, db_session, seed_accounts):
@@ -672,8 +687,9 @@ def test_every_kind_together_in_one_answer(client, db_session, seed_accounts):
         "unbalanced": 1,
         "accounts": ["Card Fees"],
         "cut_off": True,
+        "replaced": 0,
     }
-    assert data["left_out"] == {"unbalanced": 0, "missing_account": 0}
+    assert data["left_out"] == {"unbalanced": 0, "missing_account": 0, "replaces": 0}
 
 
 def test_an_unbalanced_transaction_on_a_missing_account_needs_both(
@@ -685,7 +701,7 @@ def test_an_unbalanced_transaction_on_a_missing_account_needs_both(
     # the account alone: the check still waits on its own answer
     data = _upload(client, UNBALANCED, {"accounts": {"Rent": "expense"}})
     assert data["journals"] == 7
-    assert data["left_out"] == {"unbalanced": 1, "missing_account": 0}
+    assert data["left_out"] == {"unbalanced": 1, "missing_account": 0, "replaces": 0}
     data = _upload(client, UNBALANCED, {"unbalanced": [CHECK_1002]})
     assert data["journals"] == 1 and data["duplicates_skipped"] == 7
 

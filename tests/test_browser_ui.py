@@ -850,10 +850,11 @@ PROBLEM_LIST = """() => {
 }"""
 
 
-def _problem_page(browser, sent):
+def _problem_page(browser, sent, problems=None, answered=None):
     def answer(route):
         sent.append(route.request.post_data_buffer or b"")
-        route.fulfill(json=LEDGER_PROBLEMS if len(sent) == 1 else LEDGER_ANSWERED)
+        first = problems or LEDGER_PROBLEMS
+        route.fulfill(json=first if len(sent) == 1 else answered or LEDGER_ANSWERED)
 
     page = _open(browser, 1280, 800, "#/iif")
     page.route("**/api/csv/import/qb-report", answer)
@@ -953,6 +954,7 @@ def test_a_ledger_files_problems_are_listed_and_answered(browser):
         assert json.loads(_form_field(sent[1], "answers")) == {
             "file_sha256": "5e" * 32,
             "unbalanced": ["Check 1002 · 2024-01-03 · Harbor Properties"],
+            "replaces": [],
             "accounts": {"Card Fees": "expense"},
             "cut_off": True,
         }
@@ -1023,6 +1025,163 @@ def test_a_long_problem_list_is_one_stop_for_the_keyboard(browser):
         assert page.evaluate(FOCUSED) == (
             "Import Check 1002 of Jan 3, 2024, Harbor Properties, off by $10.00"
         )
+    finally:
+        page.close()
+
+
+# A file that has whole two transactions the books hold as partial entries
+# (#663): one ticked replaces its entry, one in a reconciliation cannot.
+LEDGER_REPLACES = {
+    "detected": "ledger",
+    "journals": 0,
+    "duplicates_skipped": 7,
+    "errors": [],
+    "warnings": [],
+    "ready": 0,
+    "file_sha256": "ab" * 32,
+    "problems": [
+        {
+            "kind": "replaces",
+            "key": "General Journal 31 · 2024-01-31",
+            "date": "2024-01-31",
+            "type": "General Journal",
+            "num": "31",
+            "name": "Smith",
+            "names": ["Smith"],
+            "amount": "100.00",
+            "off": "0.00",
+            "rows": [4, 7],
+            "journals": 1,
+            "partial": [
+                {
+                    "id": 2,
+                    "date": "2024-01-31",
+                    "num": "31",
+                    "name": "",
+                    "amount": "100.00",
+                    "difference": "-100.00",
+                    "reconciled": False,
+                }
+            ],
+            "voidable": True,
+            "text": "General Journal 31 of 01/31/2024 is in the books as a partial "
+            "entry of 100.00",
+        },
+        {
+            "kind": "replaces",
+            "key": "Check 101 · 2024-01-05",
+            "date": "2024-01-05",
+            "type": "Check",
+            "num": "101",
+            "name": "Acme",
+            "names": ["Acme"],
+            "amount": "60.00",
+            "off": "0.00",
+            "rows": [3, 10],
+            "journals": 1,
+            "partial": [
+                {
+                    "id": 1,
+                    "date": "2024-01-05",
+                    "num": "101",
+                    "name": "Acme",
+                    "amount": "60.00",
+                    "difference": "-60.00",
+                    "reconciled": True,
+                }
+            ],
+            "voidable": False,
+            "text": "Check 101 of 01/05/2024 is in the books as a partial entry",
+        },
+    ],
+    "problem_notes": {
+        "replaces": "An earlier file had these transactions in part. Ticked, the "
+        "partial entry is voided and this file's posts in its place.",
+    },
+}
+REPLACES_ANSWERED = {
+    "detected": "ledger",
+    "journals": 1,
+    "duplicates_skipped": 7,
+    "errors": [],
+    "warnings": [],
+    "accepted": {"unbalanced": 0, "accounts": [], "cut_off": False, "replaced": 1},
+    "left_out": {"unbalanced": 0, "missing_account": 0, "replaces": 1},
+}
+
+
+def test_a_transaction_that_replaces_a_partial_entry_is_listed_beside_it(browser):
+    sent = []
+    page = _problem_page(browser, sent, LEDGER_REPLACES, REPLACES_ANSWERED)
+    try:
+        group = page.locator("#qbr [data-kind=replaces]")
+        assert group.locator("h5").inner_text() == (
+            "2 transactions that replace a partial entry in the books"
+        )
+        cells = page.evaluate(
+            """() => [...document.querySelectorAll('#qbr [data-kind=replaces] tbody tr')]
+                .map(r => [...r.cells].slice(1).map(c => c.innerText.trim()))"""
+        )
+        assert cells == [
+            [
+                "Jan 31, 2024",
+                "General Journal",
+                "31",
+                "Smith",
+                "$100.00",
+                "Jan 31, 2024 · $100.00",
+                "$100.00 more in credits",
+            ],
+            [
+                "Jan 5, 2024",
+                "Check",
+                "101",
+                "Acme",
+                "$60.00",
+                "Jan 5, 2024 · $60.00\nin a completed reconciliation",
+                "$60.00 more in credits",
+            ],
+        ]
+        ok = page.get_by_role(
+            "checkbox",
+            name="Replace the partial entry: General Journal 31 of Jan 31, 2024, "
+            "Smith, $100.00 in this file; in the books Jan 31, 2024 · $100.00, "
+            "$100.00 more in credits on Import Differences",
+        )
+        held = group.locator("input.qbr-pick").nth(1)
+        assert held.get_attribute("aria-disabled") == "true"
+        # the held one takes no tick, by click, by Space or by Select all
+        # (forced: Playwright waits for an aria-disabled box to be enabled)
+        held.click(force=True)
+        assert not held.is_checked()
+        group.get_by_role("button", name="Select all").click()
+        assert ok.is_checked() and not held.is_checked()
+        held.focus()
+        page.keyboard.press("Space")
+        assert not held.is_checked()
+        assert page.locator("#qbr [data-count=replaces]").inner_text() == (
+            "1 of 2 ticked"
+        )
+        page.click("#qbr-import")
+        page.wait_for_selector("#qbcsv-import-result .iif-results:not(.qbr)")
+        assert json.loads(_form_field(sent[1], "answers")) == {
+            "file_sha256": "ab" * 32,
+            "unbalanced": [],
+            "replaces": ["General Journal 31 · 2024-01-31"],
+            "accounts": {},
+            "cut_off": False,
+        }
+        rows = page.evaluate(
+            """() => [...document.querySelectorAll('#qbcsv-import-result .result-row')]
+                .map(r => [...r.children].map(c => c.textContent.trim()).join(' | '))"""
+        )
+        assert rows == [
+            "Detected report | Transaction Detail by Account",
+            "Journal entries | 1 imported",
+            "Replaced: partial entries voided, this file's posted in their place | 1",
+            "Left out: a partial entry in the books kept | 1",
+            "Duplicates skipped | 7",
+        ]
     finally:
         page.close()
 

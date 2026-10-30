@@ -27,6 +27,9 @@
 # out imports with what was accepted (an accepted transaction's difference
 # on Import Differences, an accepted account made with the type chosen),
 # and the rest is left out and counted. A second upload posts nothing twice.
+# An accepted transaction is a partial entry: a later file's copy of it (the
+# same Type, Num and Date, whatever its name) is listed as replacing it, and
+# ticked, the partial entry is voided and the copy posts in its place.
 #
 # Built against a real company's report (a year of a small practice's books:
 # about 5,700 rows, every transaction balanced, the section totals matched);
@@ -39,7 +42,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from datetime import datetime
 from decimal import Decimal
 
@@ -589,8 +592,9 @@ def check_answers_file(answers: dict | None, sha: str) -> None:
 def read_answers(raw) -> dict | None:
     """The person's answers to a file's problems, as the page sends them
     (#663): {"file_sha256": the list's, "unbalanced": [import key, ...],
-    "accounts": {path: account type}, "cut_off": true}. None when none were
-    sent (a first upload). A problem the answers do not accept is left out."""
+    "replaces": [a replacement's key, ...], "accounts": {path: account
+    type}, "cut_off": true}. None when none were sent (a first upload). A
+    problem the answers do not accept is left out."""
     if raw is None or not str(raw).strip():
         return None
     try:
@@ -600,11 +604,14 @@ def read_answers(raw) -> dict | None:
     if not isinstance(data, dict):
         raise DataProblem(_UNREAD_ANSWERS)
     keys = data.get("unbalanced") or []
+    replaces = data.get("replaces") or []
     chosen = data.get("accounts") or {}
     sha = data.get("file_sha256")
     if (
-        not isinstance(keys, list)
-        or not all(isinstance(k, str) for k in keys)
+        not all(
+            isinstance(v, list) and all(isinstance(k, str) for k in v)
+            for v in (keys, replaces)
+        )
         or not isinstance(chosen, dict)
         or not (sha is None or isinstance(sha, str))
     ):
@@ -620,9 +627,19 @@ def read_answers(raw) -> dict | None:
     return {
         "file_sha256": sha,
         "unbalanced": set(keys),
+        "replaces": set(replaces),
         "accounts": types,
         "cut_off": data.get("cut_off") is True,
     }
+
+
+_NO_ANSWERS = {
+    "file_sha256": None,
+    "unbalanced": set(),
+    "replaces": set(),
+    "accounts": {},
+    "cut_off": False,
+}
 
 
 def _find_differences(db: Session):
@@ -748,12 +765,93 @@ def _cut_off_problem(cut: dict) -> dict:
     return out
 
 
+def _cents(value) -> Decimal:
+    return Decimal(value or 0).quantize(Decimal("0.01"))
+
+
+def _ttd(kind, num, day) -> tuple:
+    """A transaction's QuickBooks Type, Num and Date as an entry stores them
+    (source_kind, reference, date): what a later file's copy of a partial
+    entry is matched by, whatever names either file kept (#663). A cut or
+    filtered file can lose the line that carried the only other name, so
+    the import key, which holds the journal's one name, can differ."""
+    return ((kind or "")[:50], (num or "")[:100] or None, day)
+
+
+# The reversal of a partial entry a later file replaced with the whole
+# transaction (#663) says so in its source_ref: that entry's key stays
+# taken, so an older copy of the cut file brings nothing back. A partial
+# entry voided by hand frees its key, and a corrected file brings the
+# transaction in.
+REPLACED_REF = "replaced by a later QuickBooks file"
+_IN_CHUNK = 500  # ids per IN (...), under SQLite's parameter limit
+
+
+def _chunks(items):
+    items = list(items)
+    for i in range(0, len(items), _IN_CHUNK):
+        yield items[i : i + _IN_CHUNK]
+
+
+def _entries_here(db: Session):
+    """(have, partial_by_key, partial_by_ttd): the keys of the entries this
+    import posted that a file brings nothing more of, and the partial
+    entries that stand (posted with a difference on Import Differences, and
+    not voided), by key and by Type, Num and Date.
+
+    A complete entry keeps its key, voided or not: a second upload posts
+    nothing twice. A partial entry voided by hand frees its key, so the
+    corrected file brings the transaction in; one the import replaced keeps
+    it taken."""
+    from app.services.voids import TRANSACTION_KEYED_VOIDS
+
+    rows = (
+        db.query(
+            Transaction.id,
+            Transaction.source_ref,
+            Transaction.reference,
+            Transaction.date,
+            Transaction.source_kind,
+            Transaction.source_difference,
+        )
+        .filter(Transaction.source_type == SOURCE_TYPE)
+        .all()
+    )
+    reversed_by = {}
+    for chunk in _chunks(r.id for r in rows if r.source_difference is not None):
+        for sid, ref in db.query(Transaction.source_id, Transaction.source_ref).filter(
+            Transaction.source_type.in_(TRANSACTION_KEYED_VOIDS),
+            Transaction.source_id.in_(chunk),
+        ):
+            reversed_by[sid] = ref
+    have, by_key, by_ttd = set(), {}, defaultdict(list)
+    for r in rows:
+        # its source_ref, else (an entry the 2.31.2 upgrade could not read
+        # back) the reference that held it before
+        key = r.source_ref or r.reference
+        if r.source_difference is None:
+            have.add(key)
+            continue
+        if r.id in reversed_by:
+            if reversed_by[r.id] == REPLACED_REF:
+                have.add(key)
+            continue
+        info = {"id": r.id, "key": key, "difference": _cents(r.source_difference)}
+        by_key.setdefault(key, info)
+        by_ttd[_ttd(r.source_kind, r.reference, r.date)].append(info)
+    return have, by_key, by_ttd
+
+
+def _amount(journal: list[dict]) -> Decimal:
+    debit = sum((ln["debit"] for ln in journal), Decimal("0"))
+    credit = sum((ln["credit"] for ln in journal), Decimal("0"))
+    return max(debit, credit)
+
+
 def _unbalanced_problem(txn: dict) -> dict:
     journal = txn["lines"]
     first = journal[0]
     names = [ln["name"] for ln in journal if ln["name"]]
-    debit = sum((ln["debit"] for ln in journal), Decimal("0"))
-    credit = sum((ln["credit"] for ln in journal), Decimal("0"))
     return {
         "kind": "unbalanced",
         "key": txn["key"],
@@ -761,24 +859,93 @@ def _unbalanced_problem(txn: dict) -> dict:
         "type": first["type"],
         "num": first["num"],
         "name": names[0] if names else "",
-        "amount": f"{max(debit, credit):.2f}",
-        "off": f"{debit - credit:.2f}",
+        "amount": f"{_amount(journal):.2f}",
+        "off": f"{txn['off']:.2f}",
         "rows": [ln["row"] for ln in journal],
         "text": _unbalanced_words(journal),
     }
 
 
-def _problems(pending: list[dict], cut: dict, missing: dict) -> list[dict]:
+def _partial_view(db: Session, info: dict) -> dict:
+    """A partial entry in the books, as the list shows it beside the file's
+    copy: its date, amount and difference."""
+    txn = db.get(Transaction, info["id"])
+    return {
+        "id": txn.id,
+        "date": txn.date.isoformat(),
+        "num": txn.reference or "",
+        "name": txn.description or "",
+        "amount": f"{sum((ln.debit for ln in txn.lines), Decimal('0')):.2f}",
+        "difference": f"{info['difference']:.2f}",
+        "reconciled": any(ln.reconciliation_id for ln in txn.lines),
+    }
+
+
+def _replaces_problem(db: Session, group: dict) -> dict:
+    """A transaction this file has whole (or less cut) that the books hold as
+    a partial entry: the file's copy beside the entry it would replace."""
+    journals = group["journals"]
+    first = journals[0]["lines"][0]
+    label = f"{first['type']} {first['num']}".strip()
+    names = list(
+        OrderedDict.fromkeys(
+            ln["name"] for j in journals for ln in j["lines"] if ln["name"]
+        )
+    )
+    amount = sum((_amount(j["lines"]) for j in journals), Decimal("0"))
+    off = sum((j["off"] for j in journals), Decimal("0"))
+    partial = [_partial_view(db, p) for p in group["partials"]]
+    voidable = not any(p["reconciled"] for p in partial)
+    held = sum((Decimal(p["amount"]) for p in partial), Decimal("0"))
+    plug = sum((Decimal(p["difference"]) for p in partial), Decimal("0"))
+    text = (
+        f"{label} of {first['date']:%m/%d/%Y} is in the books as a partial "
+        f"entry of {held:,.2f}, {abs(plug):,.2f} of it on "
+        f"{_differences_label(db)}; this file has "
+        + ("the whole transaction" if off == 0 else f"it {abs(off):,.2f} off")
+        + f", {amount:,.2f}."
+    )
+    if not voidable:
+        text += (
+            " The entry in the books is in a completed reconciliation, so it "
+            "cannot be voided to replace it: undo that reconciliation first."
+        )
+    return {
+        "kind": "replaces",
+        "key": group["key"],
+        "date": first["date"].isoformat(),
+        "type": first["type"],
+        "num": first["num"],
+        "name": names[0] if names else "",
+        "names": names,
+        "amount": f"{amount:.2f}",
+        "off": f"{off:.2f}",
+        "rows": [ln["row"] for j in journals for ln in j["lines"]],
+        "journals": len(journals),
+        "partial": partial,
+        "voidable": voidable,
+        "text": text,
+    }
+
+
+def _problems(
+    db: Session,
+    candidates: list[dict],
+    cut: dict,
+    missing: dict,
+    groups: dict,
+) -> list[dict]:
     """What the person answers before anything posts, among the
     transactions not in the books already: a notice when the file looks
     cut short or edited, each account not in the chart with how many
-    transactions touch it, and each transaction that does not balance,
-    every one however many (discussion #349)."""
-    if not pending:
+    transactions touch it, each transaction the books hold as a partial
+    entry that this file has whole, and each transaction that does not
+    balance, every one however many (discussion #349)."""
+    if not candidates:
         return []
     out = [_cut_off_problem(cut)] if cut else []
     for target in OrderedDict.fromkeys(missing.values()):
-        n = sum(1 for t in pending if target in t["needs"])
+        n = sum(1 for t in candidates if target in t["needs"])
         if not n:
             continue
         touching = f"{n} transaction{'s' if n != 1 else ''}"
@@ -791,7 +958,12 @@ def _problems(pending: list[dict], cut: dict, missing: dict) -> list[dict]:
                 "text": f"{target} is not in the chart ({touching})",
             }
         )
-    out += [_unbalanced_problem(t) for t in pending if not t["balanced"]]
+    out += [_replaces_problem(db, g) for g in groups.values()]
+    out += [
+        _unbalanced_problem(t)
+        for t in candidates
+        if t["state"] == "pending" and not t["balanced"]
+    ]
     return out
 
 
@@ -816,14 +988,24 @@ def _problem_notes(db: Session, problems: list[dict]) -> dict:
             "make it now. A transaction that touches an account left unticked is "
             "left out."
         )
+    if "replaces" in kinds:
+        notes["replaces"] = (
+            "An earlier file had these transactions in part, and each was "
+            f"imported with its difference on {_differences_label(db)}. This file "
+            "has them whole. Ticked, the partial entry is voided (its usual "
+            "reversal, on its own date) and this file's posts in its place. "
+            "Unticked, the entry in the books stays as it is and this file's is "
+            "left out."
+        )
     if "unbalanced" in kinds:
         notes["unbalanced"] = (
             "These transactions do not balance in the file. A report filtered to "
             "some accounts leaves their other side out: set Customize Report > "
             "Filters > Account to All accounts. Ticked, one posts with its "
             f"difference on {_differences_label(db)}, an equity account, for you "
-            "or your accountant to clear. Unticked, it is left out, and a "
-            "corrected file brings it in later."
+            "or your accountant to clear, and a later file that has it whole is "
+            "offered to replace it. Unticked, it is left out, and a later file "
+            "that has it brings it in."
         )
     return notes
 
@@ -892,14 +1074,7 @@ def import_ledger_report(
             missing[path] = _other_section_target(path) or path
         accounts[path] = acct
     journals, unbalanced = group_transactions(lines)
-    # each entry's key: its source_ref, else (an entry the 2.31.2 upgrade
-    # could not read back) the reference that held it before
-    have = {
-        key or ref
-        for key, ref in db.query(Transaction.source_ref, Transaction.reference).filter(
-            Transaction.source_type == SOURCE_TYPE
-        )
-    }
+    have, partial_by_key, partial_by_ttd = _entries_here(db)
     # the balanced ones are keyed first, as before #663, so their keys are
     # the ones an earlier upload of them made whatever else this file holds
     seen: dict = {}
@@ -910,16 +1085,63 @@ def import_ledger_report(
         {"lines": g, "key": _import_key(g, seen), "balanced": False} for g in unbalanced
     ]
     txns.sort(key=lambda t: (t["lines"][0]["date"], t["lines"][0]["row"]))
+    # where each transaction stands: here already, a partial entry's
+    # replacement, or to post
+    claimed = set()  # partial entries this file has as they are (a copy)
     for t in txns:
+        first = t["lines"][0]
         t["needs"] = {missing[ln["path"]] for ln in t["lines"] if ln["path"] in missing}
-    pending = [t for t in txns if t["key"] not in have]
-    problems = _problems(pending, cut, missing)
-    if cut and not pending:
+        t["off"] = _off(t["lines"])
+        t["ttd"] = _ttd(first["type"], first["num"], first["date"])
+        t["state"] = None
+        partial = partial_by_key.get(t["key"])
+        if t["key"] in have:
+            t["state"] = "here"
+        elif (
+            partial is not None
+            and not t["balanced"]
+            and _cents(t["off"]) == partial["difference"]
+        ):
+            # the same cut file again: its entry is the one in the books
+            t["state"] = "here"
+            claimed.add(partial["id"])
+    groups: OrderedDict = OrderedDict()
+    for t in txns:
+        if t["state"]:
+            continue
+        standing = [
+            p for p in partial_by_ttd.get(t["ttd"], ()) if p["id"] not in claimed
+        ]
+        if not standing:
+            t["state"] = "pending"
+            continue
+        # the books hold this transaction as a partial entry, whatever its
+        # name there: the file's copy replaces it, or nothing
+        t["state"] = "replaces"
+        first = t["lines"][0]
+        group = groups.setdefault(
+            t["ttd"],
+            {
+                "key": f"{first['type']} {first['num']}".strip()
+                + f" · {first['date']:%Y-%m-%d}",
+                "journals": [],
+                "partials": standing,
+            },
+        )
+        group["journals"].append(t)
+    candidates = [t for t in txns if t["state"] in ("pending", "replaces")]
+    problems = _problems(db, candidates, cut, missing, groups)
+    if cut and not candidates:
         result["warnings"].append(_cut_off_problem(cut)["text"])
+    here = sum(1 for t in txns if t["state"] == "here")
     if problems and answers is None:
         # nothing posts before the person has seen them
-        result["duplicates_skipped"] = len(txns) - len(pending)
-        result["ready"] = sum(1 for t in pending if t["balanced"] and not t["needs"])
+        result["duplicates_skipped"] = here
+        result["ready"] = sum(
+            1
+            for t in candidates
+            if t["state"] == "pending" and t["balanced"] and not t["needs"]
+        )
         result["problems"] = problems
         result["problem_notes"] = _problem_notes(db, problems)
         if file_sha:
@@ -934,9 +1156,9 @@ def import_ledger_report(
                 for d in ACCOUNT_TYPES
             ]
         return result
-    answers = answers or {"unbalanced": set(), "accounts": {}, "cut_off": False}
+    answers = answers or _NO_ANSWERS
     if cut and problems and not answers["cut_off"]:
-        result["duplicates_skipped"] = len(txns) - len(pending)
+        result["duplicates_skipped"] = here
         result["errors"].append(
             "Nothing was imported: the file looks cut short or edited, and "
             "importing what is there was not chosen. Export it again for a "
@@ -946,36 +1168,31 @@ def import_ledger_report(
     made = {}
     for target in OrderedDict.fromkeys(missing.values()):
         detail = answers["accounts"].get(target)
-        if detail is not None and any(target in t["needs"] for t in pending):
+        if detail is not None and any(target in t["needs"] for t in candidates):
             made[target] = _make_account(db, target, detail)
     for path, target in missing.items():
         if target in made:
             accounts[path] = made[target]
-    left_out = {"unbalanced": 0, "missing_account": 0}
+    left_out = {"unbalanced": 0, "missing_account": 0, "replaces": 0}
     accepted = 0
-    differences = None
-    touches_control = 0
+    replaced = 0
+    posting = {"differences": None, "control": 0}
     from app.services.accounting import get_ap_account_id, get_ar_account_id
 
     try:
         control = {get_ar_account_id(db), get_ap_account_id(db)}
     except Exception:
         control = set()
-    for t in txns:
-        key, journal = t["key"], t["lines"]
-        if key in have:
-            result["duplicates_skipped"] += 1
-            continue
-        # counted once, under the first reason it is left out
-        if t["needs"] - made.keys():
-            left_out["missing_account"] += 1
-            continue
-        if not t["balanced"] and key not in answers["unbalanced"]:
-            left_out["unbalanced"] += 1
-            continue
+
+    def post(t) -> None:
+        """One journal, as a register entry reads (#663): QuickBooks' Name
+        is the payee (none on an entry with no name), its Num the reference,
+        each line's Memo on the line, its Type the register's Type; one that
+        does not balance with its difference on Import Differences."""
+        journal = t["lines"]
         first = journal[0]
         names = [ln["name"] for ln in journal if ln["name"]]
-        posted = [
+        lines_out = [
             {
                 "account_id": accounts[ln["path"]].id,
                 "debit": ln["debit"],
@@ -984,41 +1201,90 @@ def import_ledger_report(
             }
             for ln in journal
         ]
-        if not t["balanced"]:
-            if differences is None:
-                differences = _ensure_differences(db)
-            off = _off(journal)
-            posted.append(
+        off = t["off"]
+        if off:
+            if posting["differences"] is None:
+                posting["differences"] = _ensure_differences(db)
+            lines_out.append(
                 {
-                    "account_id": differences.id,
+                    "account_id": posting["differences"].id,
                     "debit": -off if off < 0 else Decimal("0"),
                     "credit": off if off > 0 else Decimal("0"),
                     "description": DIFFERENCE_MEMO,
                 }
             )
-            accepted += 1
-        if any(p["account_id"] in control for p in posted):
-            touches_control += 1
-        # as a register entry reads (#663): QuickBooks' Name is the payee
-        # (none on an entry with no name), its Num the reference, each
-        # line's Memo on the line, its Type the register's Type
-        create_journal_entry(
+        if any(ln["account_id"] in control for ln in lines_out):
+            posting["control"] += 1
+        txn = create_journal_entry(
             db,
             first["date"],
             (names[0] if names else "")[:200],
-            posted,
+            lines_out,
             source_type=SOURCE_TYPE,
             reference=first["num"][:100] or None,
             is_adjusting=bool(adjusting_only),
             posted_by=posted_by,
-            source_ref=key,
+            source_ref=t["key"],
             source_kind=first["type"][:50],
         )
-        have.add(key)
+        if off:
+            # a partial entry: a later file that has it whole replaces it
+            txn.source_difference = off
+        have.add(t["key"])
         result["journals"] += 1
-    if touches_control:
+
+    from app.routes.journal import reverse_journal_entry
+
+    for t in txns:
+        state = t["state"]
+        if state == "here":
+            result["duplicates_skipped"] += 1
+            continue
+        if state == "replaces":
+            group = groups[t["ttd"]]
+            if group.get("done"):
+                continue
+            group["done"] = True
+            journals = group["journals"]
+            if group["key"] not in answers["replaces"]:
+                left_out["replaces"] += len(journals)
+                continue
+            standing = [db.get(Transaction, p["id"]) for p in group["partials"]]
+            if any(ln.reconciliation_id for e in standing for ln in e.lines):
+                left_out["replaces"] += len(journals)
+                result["warnings"].append(
+                    f"{group['key']}: the partial entry in the books is in a "
+                    "completed reconciliation, so it was not replaced. Undo that "
+                    "reconciliation and import the file again."
+                )
+                continue
+            if any(j["needs"] - made.keys() for j in journals):
+                # all of it or nothing: the partial entry covers every one
+                left_out["missing_account"] += len(journals)
+                continue
+            for entry in standing:
+                reverse_journal_entry(
+                    db, entry, acting=posted_by, source_ref=REPLACED_REF
+                )
+                replaced += 1
+            for j in journals:
+                post(j)
+                if j["off"]:
+                    accepted += 1
+            continue
+        # counted once, under the first reason it is left out
+        if t["needs"] - made.keys():
+            left_out["missing_account"] += 1
+            continue
+        if not t["balanced"] and t["key"] not in answers["unbalanced"]:
+            left_out["unbalanced"] += 1
+            continue
+        post(t)
+        if not t["balanced"]:
+            accepted += 1
+    if posting["control"]:
         result["warnings"].append(
-            f"{touches_control} of the journals post to Accounts Receivable or "
+            f"{posting['control']} of the journals post to Accounts Receivable or "
             "Accounts Payable. The A/R and A/P aging read invoices and bills, so "
             "enter the ones still open as documents after the import."
         )
@@ -1027,9 +1293,10 @@ def import_ledger_report(
             "unbalanced": accepted,
             "accounts": list(made),
             "cut_off": bool(cut),
+            "replaced": replaced,
         }
         result["left_out"] = left_out
-        if differences is not None:
-            result["differences_account"] = label_for(differences, db)
+        if posting["differences"] is not None:
+            result["differences_account"] = label_for(posting["differences"], db)
     db.commit()
     return result

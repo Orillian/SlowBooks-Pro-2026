@@ -70,6 +70,13 @@ class Transaction(Base):
     # the register's Type column shows as "Check (imported)". NULL on
     # everything else.
     source_kind = Column(String(50), nullable=True)
+    # A partial entry (#663): one the same import posted from a file that
+    # did not hold all of the transaction, its difference on Import
+    # Differences. The file's debits less its credits, so what the entry
+    # put on Import Differences is a credit of this much (a debit when it is
+    # negative). A later file that holds the whole transaction is offered as
+    # its replacement. NULL on every other entry.
+    source_difference = Column(Numeric(15, 2), nullable=True)
 
     # Class tracking dimension (QB-style); NULL groups with Uncategorized
     class_id = Column(Integer, ForeignKey("classes.id"), nullable=True)

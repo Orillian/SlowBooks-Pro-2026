@@ -568,6 +568,44 @@ def update_journal_entry(
     return out
 
 
+def reverse_journal_entry(
+    db: Session,
+    txn: Transaction,
+    *,
+    acting: str | None = None,
+    source_type: str = "manual_void",
+    source_ref: str | None = None,
+) -> Transaction:
+    """A journal entry's void: its mirror image on its own date (every line,
+    whatever its basis), the description and reference it had, an
+    adjustment's reversal an adjustment, and its bank lines handed back to
+    the review queue. Refused for an entry on a completed reconciliation and
+    one in a closed period, as Void is. The caller commits.
+
+    The journal's Void, and the ledger import replacing a partial entry
+    with the whole transaction from a later file (#663, which marks the
+    reversal with ``source_ref``)."""
+    assert_not_reconciled(txn)
+    check_closing_date(db, txn.date)
+    void_txn = create_journal_entry(
+        db,
+        txn.date,
+        # the reversal of an adjustment says so, and is one (#341)
+        ("VOID adjusting entry: " if txn.is_adjusting else "VOID: ") + header_text(txn),
+        reversing_lines(all_lines(db, txn.id)),
+        source_type=source_type,
+        source_id=txn.id,
+        reference=txn.reference,
+        class_id=txn.class_id,
+        job_id=txn.job_id,
+        is_adjusting=bool(txn.is_adjusting),
+        posted_by=acting,
+        source_ref=source_ref,
+    )
+    release_statement_links(db, txn)
+    return void_txn
+
+
 @router.post("/{entry_id}/void", response_model=JournalEntryResponse)
 def void_journal_entry(
     entry_id: int, db: Session = Depends(get_db), request: Request = None
@@ -647,27 +685,16 @@ def void_journal_entry(
     assert_not_reconciled(txn)
     check_closing_date(db, txn.date)
 
-    reverse_lines = reversing_lines(all_lines(db, txn.id))
-    if reverse_lines:
+    if all_lines(db, txn.id):
         try:
-            void_txn = create_journal_entry(
+            void_txn = reverse_journal_entry(
                 db,
-                txn.date,
-                # the reversal of an adjustment says so, and is one (#341)
-                ("VOID adjusting entry: " if txn.is_adjusting else "VOID: ")
-                + header_text(txn),
-                reverse_lines,
+                txn,
+                acting=acting,
                 # A QuickBooks Online import posting is reversed under its own
                 # name, so a later import knows it was voided here.
                 source_type=f"{txn.source_type}_void" if from_qbo else "manual_void",
-                source_id=txn.id,
-                reference=txn.reference,
-                class_id=txn.class_id,
-                job_id=txn.job_id,
-                is_adjusting=bool(txn.is_adjusting),
-                posted_by=acting,
             )
-            release_statement_links(db, txn)
             if from_qbo:
                 qbo_documents.mark_changed_here(
                     db,

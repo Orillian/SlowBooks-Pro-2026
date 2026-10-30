@@ -319,6 +319,7 @@ const IIFPage = {
         const [cut] = of('cut_off');
         const accounts = of('missing_account');
         const unbalanced = of('unbalanced');
+        const replaces = of('replaces');
         const ready = result.ready || 0;
         const here = result.duplicates_skipped || 0;
         IIFPage._errors.qbr = problems.map(p => p.text);
@@ -350,6 +351,37 @@ const IIFPage = {
                 ${IIFPage._bulk('missing_account', 'Accounts not in the chart')}
                 <div class="qbr-scroll"><table>
                     <thead><tr><th scope="col"><span class="visually-hidden">Make it</span></th><th scope="col">Account</th><th scope="col" class="amount">Transactions</th><th scope="col">Type</th></tr></thead>
+                    <tbody>${rows}</tbody>
+                </table></div>
+            </section>`;
+        }
+        if (replaces.length) {
+            // A transaction the books hold as a partial entry (its
+            // difference on Import Differences) that this file has whole:
+            // the file's copy beside the entry it would replace (#663).
+            const rows = replaces.map((p, i) => {
+                const what = `${p.type}${p.num ? ` ${p.num}` : ''} of ${formatDate(p.date)}${p.name ? `, ${p.name}` : ''}`;
+                const books = (p.partial || []).map(e => `${formatDate(e.date)} · ${formatCurrency(Number(e.amount))}`);
+                const plugs = (p.partial || []).map(e => IIFPage._offWords(e.difference));
+                const said = `Replace the partial entry: ${what}, ${formatCurrency(Number(p.amount))} in this file; in the books ${books.join(' and ')}, ${plugs.join(' and ')} on Import Differences`;
+                const held = p.voidable === false;
+                return `<tr>
+                    <td class="qbr-pick-cell"><input type="checkbox" class="qbr-pick" data-kind="replaces" data-key="${escapeHtml(p.key)}" tabindex="${i ? -1 : 0}" aria-label="${escapeHtml(said)}"${held ? ' aria-disabled="true" title="In a completed reconciliation: undo it to replace this entry"' : ''} onclick="IIFPage._pickClick(event)" onchange="IIFPage._reviewChanged()"></td>
+                    <td class="qbr-nowrap">${formatDate(p.date)}</td>
+                    <td>${escapeHtml(p.type)}</td>
+                    <td>${escapeHtml(p.num || '')}</td>
+                    <td>${escapeHtml((p.names || []).join(', ') || p.name || '')}</td>
+                    <td class="amount qbr-nowrap">${formatCurrency(Number(p.amount))}${Number(p.off) ? `<br><span class="qbr-hint">${escapeHtml(IIFPage._offWords(p.off))}</span>` : ''}</td>
+                    <td class="qbr-nowrap">${books.map(escapeHtml).join('<br>')}${held ? '<br><span class="qbr-hint">in a completed reconciliation</span>' : ''}</td>
+                    <td class="amount qbr-nowrap">${plugs.map(escapeHtml).join('<br>')}</td>
+                </tr>`;
+            }).join('');
+            html += `<section class="qbr-group" data-kind="replaces" aria-labelledby="qbr-h-replaces">
+                <h5 id="qbr-h-replaces">${IIFPage._count(replaces.length, 'transaction')} that ${replaces.length === 1 ? 'replaces' : 'replace'} a partial entry in the books</h5>
+                <p class="qbr-note">${escapeHtml(notes.replaces || '')} <span id="qbr-keys-hint-replaces">In the list, the arrow keys move from row to row and Tab leaves it.</span></p>
+                ${IIFPage._bulk('replaces', 'Transactions that replace a partial entry')}
+                <div class="qbr-scroll qbr-roving"><table aria-describedby="qbr-keys-hint-replaces">
+                    <thead><tr><th scope="col"><span class="visually-hidden">Replace</span></th><th scope="col">Date</th><th scope="col">Type</th><th scope="col">Num</th><th scope="col">Name</th><th scope="col" class="amount">In this file</th><th scope="col">In the books now</th><th scope="col" class="amount">Its difference</th></tr></thead>
                     <tbody>${rows}</tbody>
                 </table></div>
             </section>`;
@@ -428,8 +460,20 @@ const IIFPage = {
     },
 
     reviewAll(kind, on) {
-        IIFPage._picks(kind).forEach(box => { if (!box.disabled) box.checked = on; });
+        IIFPage._picks(kind).forEach(box => { if (!box.disabled && box.getAttribute('aria-disabled') !== 'true') box.checked = on; });
         IIFPage._reviewChanged();
+    },
+
+    // A box that cannot be ticked stays in the keyboard's way through the
+    // list (aria-disabled, not disabled) and ignores the click or Space.
+    _pickClick(event) {
+        if (event.currentTarget.getAttribute('aria-disabled') === 'true') event.preventDefault();
+    },
+
+    // How far off, and which side is over: "$10.00 more in debits".
+    _offWords(off) {
+        const n = Number(off) || 0;
+        return `${formatCurrency(Math.abs(n))} more in ${n > 0 ? 'debits' : 'credits'}`;
     },
 
     // a missing account's row is ticked once it has a type, and cannot be
@@ -444,7 +488,7 @@ const IIFPage = {
     // The groups' counts, and Import held while the file's notice is
     // unticked: unticked, nothing would be imported.
     _reviewChanged() {
-        for (const kind of ['missing_account', 'unbalanced']) {
+        for (const kind of ['missing_account', 'replaces', 'unbalanced']) {
             const count = document.querySelector(`#qbr [data-count="${kind}"]`);
             if (!count) continue;
             const picks = IIFPage._picks(kind);
@@ -459,10 +503,12 @@ const IIFPage = {
     },
 
     _answers() {
-        const answers = { file_sha256: IIFPage._qbReport?.sha || '', unbalanced: [], accounts: {}, cut_off: false };
+        const answers = { file_sha256: IIFPage._qbReport?.sha || '', unbalanced: [], replaces: [], accounts: {}, cut_off: false };
         for (const box of document.querySelectorAll('#qbr input.qbr-pick:checked')) {
             const kind = box.dataset.kind;
+            if (box.getAttribute('aria-disabled') === 'true') continue;
             if (kind === 'unbalanced') answers.unbalanced.push(box.dataset.key);
+            if (kind === 'replaces') answers.replaces.push(box.dataset.key);
             if (kind === 'cut_off') answers.cut_off = true;
             if (kind === 'missing_account') {
                 const type = box.closest('tr').querySelector('select.qbr-type').value;
@@ -506,7 +552,9 @@ const IIFPage = {
             html += row('Accounts made', accepted.accounts.length);
             html += `<div class="result-row result-row--line">${accepted.accounts.map(escapeHtml).join(', ')}</div>`;
         }
+        if (accepted.replaced > 0) html += row('Replaced: partial entries voided, this file\'s posted in their place', accepted.replaced);
         if (accepted.cut_off) html += '<div class="result-row result-row--line">The file looked cut off; what was in it was imported.</div>';
+        if (left.replaces > 0) html += row('Left out: a partial entry in the books kept', left.replaces);
         if (left.unbalanced > 0) html += row('Left out: did not balance', left.unbalanced);
         if (left.missing_account > 0) html += row('Left out: an account not in the chart', left.missing_account);
         return html;

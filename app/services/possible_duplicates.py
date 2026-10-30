@@ -15,7 +15,10 @@ Two entries on the account are a possible duplicate when:
   Account import (#663): QuickBooks already keeps its transactions apart
   (two transfers with no name, of one amount, a day apart), and the import
   skips a second copy of the same file. An imported entry still pairs with
-  a typed, bank-feed or other entry.
+  a typed, bank-feed or other entry, and two imported entries pair when
+  either is a partial entry (one posted from a file that did not hold all
+  of the transaction, its difference on Import Differences): that is where
+  a transaction can come in twice.
 
 A group is anchored on its first (earliest) entry: every later entry
 within WINDOW_DAYS of that anchor, with a payee similar to the anchor's,
@@ -257,6 +260,18 @@ def possible_duplicates(
             .filter(BankTransaction.match_status == "added")
         }
     migrated = migrated_sources()
+    # the ledger import's partial entries (#663): two imported entries pair
+    # again when either is one
+    partial: set[int] = set()
+    for chunk in _chunks(
+        {e["transaction_id"] for e in entries if e["source_type"] == QB_LEDGER_SOURCE}
+    ):
+        partial |= {
+            r[0]
+            for r in db.query(Transaction.id).filter(
+                Transaction.id.in_(chunk), Transaction.source_difference.isnot(None)
+            )
+        }
 
     # same side, same amount; then pairs close enough in date and payee
     buckets: dict[tuple, list] = {}
@@ -291,7 +306,11 @@ def possible_duplicates(
                     break  # rows are date-sorted: nothing later is nearer
                 if used[j] or rows[j]["transaction_id"] == anchor["transaction_id"]:
                     continue
-                if anchor["source_type"] == rows[j]["source_type"] == QB_LEDGER_SOURCE:
+                if (
+                    anchor["source_type"] == rows[j]["source_type"] == QB_LEDGER_SOURCE
+                    and anchor["transaction_id"] not in partial
+                    and rows[j]["transaction_id"] not in partial
+                ):
                     continue
                 if similar_payees(anchor["payee"], rows[j]["payee"]):
                     members.append(rows[j])

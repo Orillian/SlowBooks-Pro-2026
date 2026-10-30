@@ -593,6 +593,9 @@ def test_the_migration_rewrites_and_its_downgrade_puts_the_keys_back(tmp_path):
             "Check 1001 · 2024-01-08 · Office Depot",
         ),
         2: ("Funds Moved 12 — Acme", "Funds Moved 12 · 2024-01-08 · Acme"),
+        # a partial entry (#663) as a downgrade left it: in the new shape,
+        # its key in the reference, its difference on Import Differences
+        3: ("Harbor Properties", "Check 1002 · 2024-01-08 · Harbor Properties"),
     }
     engine = sa.create_engine(url)
     with engine.begin() as conn:
@@ -600,7 +603,8 @@ def test_the_migration_rewrites_and_its_downgrade_puts_the_keys_back(tmp_path):
             sa.text(
                 "INSERT INTO accounts (id, name, account_type, is_active, is_system, "
                 "balance) VALUES (1, 'Checking', 'ASSET', 1, 0, 0), "
-                "(2, 'Supplies', 'EXPENSE', 1, 0, 0)"
+                "(2, 'Supplies', 'EXPENSE', 1, 0, 0), "
+                "(3, 'Import Differences', 'EQUITY', 1, 1, 0)"
             )
         )
         for txn_id, (description, reference) in entries.items():
@@ -617,7 +621,10 @@ def test_the_migration_rewrites_and_its_downgrade_puts_the_keys_back(tmp_path):
                 "INSERT INTO transaction_lines (transaction_id, account_id, debit, "
                 "credit, description, is_billable, cleared) VALUES "
                 "(1, 1, 0, 75, 'Office Depot', 0, 0), (1, 2, 75, 0, 'Paper', 0, 0), "
-                "(2, 1, 0, 5, 'Acme', 0, 0), (2, 2, 5, 0, 'Acme', 0, 0)"
+                "(2, 1, 0, 5, 'Acme', 0, 0), (2, 2, 5, 0, 'Acme', 0, 0), "
+                "(3, 1, 0, 1000, 'January rent', 0, 0), "
+                "(3, 2, 1010, 0, 'January rent', 0, 0), "
+                "(3, 3, 0, 10, 'Difference in the QuickBooks file', 0, 0)"
             )
         )
     engine.dispose()
@@ -635,25 +642,41 @@ def test_the_migration_rewrites_and_its_downgrade_puts_the_keys_back(tmp_path):
         finally:
             engine.dispose()
 
-    command.upgrade(cfg, REVISION)
-    assert stored("description", "reference", "source_ref", "source_kind") == {
-        1: ("Office Depot", "1001", "Check 1001 · 2024-01-08 · Office Depot", "Check"),
-        2: (*entries[2], None, None),
+    harbor = "Check 1002 · 2024-01-08 · Harbor Properties"
+    upgraded = {
+        1: (
+            "Office Depot",
+            "1001",
+            "Check 1001 · 2024-01-08 · Office Depot",
+            "Check",
+            None,
+        ),
+        2: (*entries[2], None, None, None),
+        # the partial entry's difference, its file's debits less its credits
+        3: ("Harbor Properties", "1002", harbor, "Check", 10),
     }
+    columns = ("description", "reference", "source_ref", "source_kind")
+
+    def stored_whole():
+        return {
+            i: (*rest, None if off is None else float(off))
+            for i, (*rest, off) in stored(*columns, "source_difference").items()
+        }
+
+    command.upgrade(cfg, REVISION)
+    assert stored_whole() == upgraded
 
     command.downgrade(cfg, before)
     engine = sa.create_engine(url)
-    assert not {"source_ref", "source_kind"} & {
+    assert not {"source_ref", "source_kind", "source_difference"} & {
         c["name"] for c in sa.inspect(engine).get_columns("transactions")
     }
     engine.dispose()
     assert stored("description", "reference") == {
         1: ("Office Depot", "Check 1001 · 2024-01-08 · Office Depot"),
         2: entries[2],
+        3: entries[3],
     }
     # and upgraded again, as the first upgrade left them
     command.upgrade(cfg, REVISION)
-    assert stored("description", "reference", "source_ref", "source_kind") == {
-        1: ("Office Depot", "1001", "Check 1001 · 2024-01-08 · Office Depot", "Check"),
-        2: (*entries[2], None, None),
-    }
+    assert stored_whole() == upgraded

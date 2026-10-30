@@ -1,5 +1,5 @@
-"""transactions.source_ref and source_kind; ledger imports read as register
-entries (#663)
+"""transactions.source_ref, source_kind and source_difference; ledger
+imports read as register entries (#663)
 
 QuickBooks Desktop's Transaction Detail by Account import wrote each journal's
 description as "{Type} {Num} — {Name}: {Memo}" and kept its duplicate key,
@@ -28,9 +28,16 @@ way. An entry rewritten gets the type its key starts with as its
 source_kind; one left as it was has none. Written out here so this
 migration never changes with the importer.
 
+source_difference marks a partial entry: one the import posted from a file
+that did not hold all of the transaction, the file's debits less its
+credits, put on Import Differences on a line of its own memo ("Difference in
+the QuickBooks file"). A later file that holds the whole transaction offers
+to replace it. The upgrade fills it from that line on the entries that have
+one (after a downgrade, which drops it); every other entry leaves it NULL.
+
 downgrade puts each key back in the reference, where the import looked for
-it before, and drops both columns; the descriptions keep the name, and an
-upgrade again reads those entries back as above.
+it before, and drops the three columns; the descriptions keep the name, and
+an upgrade again reads those entries back as above.
 
 Revision ID: 4810bd59e481
 Revises: d7b3f9a1c5e2
@@ -113,13 +120,18 @@ _transactions = sa.table(
     sa.column("source_type", sa.String),
     sa.column("source_ref", sa.String),
     sa.column("source_kind", sa.String),
+    sa.column("source_difference", sa.Numeric(15, 2)),
 )
 _lines = sa.table(
     "transaction_lines",
     sa.column("id", sa.Integer),
     sa.column("transaction_id", sa.Integer),
     sa.column("description", sa.String),
+    sa.column("debit", sa.Numeric(15, 2)),
+    sa.column("credit", sa.Numeric(15, 2)),
 )
+# the memo the import gives the line it puts a partial entry's difference on
+DIFFERENCE_MEMO = "Difference in the QuickBooks file"
 
 
 def split_head(head: str):
@@ -266,6 +278,32 @@ def rewrite(bind) -> int:
     return len(changes)
 
 
+def mark_partial(bind) -> int:
+    """Fill source_difference on the entries that carry an Import
+    Differences line: the line's credit less its debit (the file's debits
+    less its credits). How many."""
+    t, ln = _transactions, _lines
+    found = defaultdict(lambda: 0)
+    for txn_id, debit, credit in bind.execute(
+        sa.select(ln.c.transaction_id, ln.c.debit, ln.c.credit)
+        .select_from(ln.join(t, t.c.id == ln.c.transaction_id))
+        .where(
+            (t.c.source_type == SOURCE_TYPE)
+            & t.c.source_difference.is_(None)
+            & (ln.c.description == DIFFERENCE_MEMO)
+        )
+    ):
+        found[txn_id] += (credit or 0) - (debit or 0)
+    if found:
+        bind.execute(
+            t.update()
+            .where(t.c.id == sa.bindparam("_id"))
+            .values(source_difference=sa.bindparam("_off")),
+            [{"_id": i, "_off": off} for i, off in found.items()],
+        )
+    return len(found)
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     insp = sa.inspect(bind)
@@ -280,7 +318,13 @@ def upgrade() -> None:
         op.add_column(
             "transactions", sa.Column("source_kind", sa.String(50), nullable=True)
         )
+    if "source_difference" not in have:
+        op.add_column(
+            "transactions",
+            sa.Column("source_difference", sa.Numeric(15, 2), nullable=True),
+        )
     rewrite(bind)
+    mark_partial(bind)
 
 
 def downgrade() -> None:
@@ -301,3 +345,5 @@ def downgrade() -> None:
         batch.drop_column("source_ref")
         if "source_kind" in have:
             batch.drop_column("source_kind")
+        if "source_difference" in have:
+            batch.drop_column("source_difference")

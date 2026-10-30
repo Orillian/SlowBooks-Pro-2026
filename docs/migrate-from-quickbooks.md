@@ -164,8 +164,21 @@ grouped, for you to tick the ones to accept and leave the rest:
 Each list has Select all and Select none, and **Save the list** writes the
 problems to a text file to work from. **Import** sends the same file again
 with your answers: what checks out and what you accepted posts, and the
-result says how many were left out and why. What was left out comes in
-from a corrected file later; what posted is skipped then.
+result says how many were left out and why.
+
+A transaction you left out comes in from a corrected file later, and what
+posted whole is skipped then. One you accepted with its difference is a
+**partial entry**, and a later file never posts it a second time: a
+transaction of the same QuickBooks Type, Num and date (whatever its name,
+which a cut can change) is listed among the transactions that **replace a
+partial entry in the books**, the partial entry's date, amount and
+difference beside it. Ticked, the partial entry is voided (its usual
+reversal, on its own date) and the file's copy posts in its place;
+unticked, both stay as they are and the file's copy is left out. Nothing
+is ticked to start with. A partial entry in a completed reconciliation is
+not replaced until that reconciliation is undone, and one you void
+yourself no longer counts as imported, so the next file brings that
+transaction in. The same cut file uploaded again posts nothing.
 
 In a bank or card register each entry reads as one typed there does:
 QuickBooks' **Name** is the payee, its **Num** the Ref #, each line's
@@ -174,8 +187,10 @@ A number on an imported check, bill payment or paycheck is known to the
 duplicate check number warning; the next check number follows only the
 checks written here. An entry with no name, such as a general journal
 entry or a transfer, has no payee and reads as its memo on the Journal
-Entries page and in reports. Possible Duplicates never pairs two imported
-entries: QuickBooks already keeps them apart. Books imported before 2.31.2
+Entries page and in reports. Possible Duplicates does not pair two imported
+entries, which QuickBooks already keeps apart, unless one of them is a
+partial entry: that is where a transaction can come in twice. Books
+imported before 2.31.2
 showed "Check 1001 — Name: memo" as the payee; upgrading rewrites those
 entries the same way, and leaves any it cannot read back exactly as they
 were. Either way, uploading the same file again posts nothing twice.
