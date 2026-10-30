@@ -7,6 +7,7 @@ from decimal import Decimal
 
 from app.models.accounts import Account, AccountType
 from app.models.transactions import Transaction
+from app.services.job_costing import ensure_default_cost_types
 
 
 def _income_expense(db):
@@ -51,7 +52,12 @@ def _code(client, code, name, cost_type="material", parent_id=None):
 # ── Cost types ───────────────────────────────────────────────────────────
 
 
-def test_cost_types_seed_edit_and_offset_setup(client, seed_accounts):
+def test_cost_types_seed_edit_and_offset_setup(client, db_session, seed_accounts):
+    # the list is a read and never seeds them (#662); a company file has the
+    # five from its migration, which the service seeds here
+    assert client.get("/api/cost-types").json() == []
+    ensure_default_cost_types(db_session)
+    db_session.commit()
     listed = client.get("/api/cost-types").json()
     assert [t["code"] for t in listed] == [
         "labor",
