@@ -249,12 +249,18 @@ async def csv_import_qb_report(
     # is marked adjusting in the sign-in's name
     # ``outflow_positive`` (#328): a categorized bank sheet whose amounts
     # read money out as positive
-    return import_qb_report(
-        db,
-        content,
-        adjusting_only=adjusting_only,
-        posted_by=db.info.get("acting_username"),
-        outflow_positive=outflow_positive,
-        answers=answered,
-        file_sha=sha,
-    )
+    try:
+        return import_qb_report(
+            db,
+            content,
+            adjusting_only=adjusting_only,
+            posted_by=db.info.get("acting_username"),
+            outflow_positive=outflow_positive,
+            answers=answered,
+            file_sha=sha,
+        )
+    except DataProblem as e:
+        # an answer the chart's rules refuse (an account made with a type
+        # its parent does not take, #663): nothing is kept
+        db.rollback()
+        raise HTTPException(status_code=400, detail=e.user_text)

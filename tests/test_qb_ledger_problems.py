@@ -358,6 +358,10 @@ def test_a_missing_account_is_one_row_with_its_transactions(
             "key": "Card Fees",
             "path": "Card Fees",
             "transactions": 2,
+            # a top-level account takes any of QuickBooks' types
+            "types": [t["value"] for t in data["account_types"]],
+            "type": None,
+            "why": None,
             "text": "Card Fees is not in the chart (2 transactions)",
         }
     ]
@@ -471,6 +475,145 @@ def test_a_parents_own_section_asks_for_the_parent(client, db_session, seed_acco
     assert data["journals"] == 1 and data["duplicates_skipped"] == 1
     software = _account(db_session, "Software")
     assert software.parent_id == office.id
+
+
+def _one_check(split_path: str, *sections) -> bytes:
+    """A check from Checking to `split_path`, its other line under the
+    sections given (the headings down to the account, depth 1 first)."""
+    rows = [
+        heading("Checking"),
+        row("Check", "01/05/2024", "101", "Acme", "", split_path, "", "60.00"),
+        total("Checking", "0.00", "60.00"),
+    ]
+    for depth, name in enumerate(sections, start=1):
+        rows.append(heading(name, depth))
+    rows.append(row("Check", "01/05/2024", "101", "Acme", "", "Checking", "60.00", ""))
+    for depth, name in reversed(list(enumerate(sections, start=1))):
+        rows.append(total(name, "60.00", "0.00", depth))
+    rows.append(grand("60.00", "60.00"))
+    return build(rows)
+
+
+TONER = _one_check("Office Supplies:Toner", "Office Supplies", "Toner")
+
+
+def _missing(data, path):
+    return next(
+        p
+        for p in data["problems"]
+        if p["kind"] == "missing_account" and p["path"] == path
+    )
+
+
+def test_a_sub_account_is_offered_its_parents_types_only(
+    client, db_session, seed_accounts
+):
+    """The reviewer's case: Toner, under the chart's 6400 Office Supplies (an
+    Expense), was made as Income, which the chart's own form refuses."""
+    first = _upload(client, TONER)
+    toner = _missing(first, "Office Supplies:Toner")
+    assert toner["types"] == ["expense"] and toner["type"] == "expense"
+    assert toner.get("why") is None
+    r = _send(client, TONER, {"accounts": {"Office Supplies:Toner": "income"}})
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"] == (
+        "Office Supplies:Toner cannot be made as Income: a sub-account shares its "
+        "parent's detail type, except under a bank, card, Accounts Receivable or "
+        "Accounts Payable parent; a sub-account of 6400 Office Supplies (Expense) "
+        "must be an Expense too."
+    )
+    assert _account(db_session, "Toner") is None and _imported(db_session) == []
+    data = _upload(client, TONER, {"accounts": {"Office Supplies:Toner": "expense"}})
+    assert data["journals"] == 1
+    made = _account(db_session, "Toner")
+    office = _account(db_session, "Office Supplies")
+    assert (made.parent_id, made.account_type, made.detail_type) == (
+        office.id,
+        AccountType.EXPENSE,
+        "expense",
+    )
+
+
+def test_an_inactive_parent_takes_no_sub_account(client, db_session, seed_accounts):
+    office = _account(db_session, "Office Supplies")
+    office.is_active = False
+    db_session.commit()
+    toner = _missing(_upload(client, TONER), "Office Supplies:Toner")
+    assert toner["types"] == [] and toner["type"] is None
+    assert "inactive" in toner["why"]
+    r = _send(client, TONER, {"accounts": {"Office Supplies:Toner": "expense"}})
+    assert r.status_code == 400, r.text
+    assert "inactive and cannot take sub-accounts" in r.json()["detail"]
+    assert _account(db_session, "Toner") is None
+
+
+def test_a_bank_parent_takes_a_sub_account_of_its_base_type(
+    client, db_session, seed_accounts
+):
+    """Under a bank, a card, A/R or A/P a sub-account keeps a detail type of
+    its own, but not another base type."""
+    data = _upload(client, _one_check("Checking:Petty Cash", "Checking", "Petty Cash"))
+    petty = _missing(data, "Checking:Petty Cash")
+    assert petty["types"] == [
+        "bank",
+        "other_current_asset",
+        "fixed_asset",
+        "other_asset",
+    ]
+    assert petty["type"] == "bank"
+    r = _send(
+        client,
+        _one_check("Checking:Petty Cash", "Checking", "Petty Cash"),
+        {"accounts": {"Checking:Petty Cash": "expense"}},
+    )
+    assert r.status_code == 400, r.text
+    assert "must be an asset too" in r.json()["detail"]
+
+
+def test_sub_accounts_made_under_one_new_parent_share_its_type(
+    client, db_session, seed_accounts
+):
+    """Both under a parent the chart lacks: the first made makes the parent
+    with its type, and the second, of another type, is refused whole."""
+    _chart_without(db_session, "Office Expense")
+    answers = {
+        "accounts": {
+            "Office Expense:Software": "expense",
+            "Office Expense:Supplies": "other_expense",
+        }
+    }
+    r = _send(client, FIXTURE.read_bytes(), answers)
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"].startswith(
+        "Office Expense:Supplies cannot be made as Other Expense: a sub-account "
+        "shares its parent's detail type"
+    )
+    assert _account(db_session, "Office Expense") is None
+    assert _imported(db_session) == []
+
+
+def test_a_sub_account_past_the_charts_depth_is_not_offered(db_session):
+    """The chart stops at 64 levels; a report's sections cannot reach that
+    deep (five label columns), so the rule is asked of the choices
+    themselves, as the list asks it for each account."""
+    from app.services.account_tree import MAX_DEPTH
+    from app.services.qb_ledger_import import _account_choices
+
+    parent, names = None, []
+    for i in range(MAX_DEPTH):
+        acct = Account(
+            name=f"Level {i}",
+            account_type=AccountType.EXPENSE,
+            parent_id=parent.id if parent else None,
+        )
+        db_session.add(acct)
+        db_session.flush()
+        parent, names = acct, names + [acct.name]
+    path = ":".join(names + ["Toner"])
+    deep = _account_choices(db_session, path)
+    assert deep["types"] == [] and "the chart stops at 64" in deep["why"]
+    one_up = _account_choices(db_session, ":".join(names[:-1] + ["Toner"]))
+    assert one_up == {"types": ["expense"], "type": "expense", "why": None}
 
 
 @pytest.mark.parametrize(

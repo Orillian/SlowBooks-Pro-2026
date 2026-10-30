@@ -700,10 +700,85 @@ def _differences_label(db: Session) -> str:
     )
 
 
+def _new_account(name: str, detail: DetailType, parent):
+    """The account the chart's form would be sent for it (#663)."""
+    from app.schemas.accounts import AccountCreate
+
+    return AccountCreate(
+        name=name[:200],
+        account_type=BASE_TYPE_OF[detail],
+        parent_id=parent.id if parent is not None else None,
+        detail_type=detail,
+        bank_kind=_BANK_KINDS.get(detail),
+    )
+
+
+def _sentence(text) -> str:
+    text = str(text).strip()
+    return text if text.endswith((".", "!", "?")) else text + "."
+
+
+def _account_choices(db: Session, path: str) -> dict:
+    """{types, type, why}: the types the account at `path` can be made with,
+    by the chart's own rules (POST /api/accounts, check_new_account) against
+    the account it would go under; the one to start on, its parent's; and,
+    when none fits (an inactive parent, the chart's depth), why. A path
+    whose parent the chart lacks takes any type: the parent is made with
+    it (#663)."""
+    from fastapi import HTTPException
+
+    from app.routes.accounts import check_new_account
+    from app.services.account_tree import MAX_DEPTH, chain_depth, depth_message
+    from app.services.iif_import import _account_at_path
+
+    segments = [part.strip() for part in path.split(":") if part.strip()]
+    parent, new = None, segments
+    for i in range(len(segments) - 1, 0, -1):
+        found = _account_at_path(db, segments[:i])
+        if found is not None:
+            parent, new = found, segments[i:]
+            break
+    if parent is not None:
+        depth = chain_depth(db, Account, parent.id) + len(new)
+        if depth > MAX_DEPTH:
+            return {"types": [], "type": None, "why": depth_message(path, depth)}
+    allowed, refused = [], {}
+    for d in ACCOUNT_TYPES:
+        try:
+            check_new_account(db, _new_account(new[0], d, parent))
+        except HTTPException as e:
+            refused[d.value] = _sentence(e.detail)
+            continue
+        allowed.append(d.value)
+    start = why = None
+    if parent is not None:
+        own = parent.detail_type
+        start = own if own in allowed else None
+        if start is None:
+            # under 1100 or 2000, whose own type is theirs alone: the first
+            # of the parent's base type
+            start = next(
+                (
+                    v
+                    for v in allowed
+                    if BASE_TYPE_OF[DetailType(v)] == parent.account_type
+                ),
+                None,
+            )
+        why = refused.get(own)
+    if not allowed:
+        return {"types": [], "type": None, "why": why or next(iter(refused.values()))}
+    return {"types": allowed, "type": start, "why": None}
+
+
 def _make_account(db: Session, path: str, detail: DetailType) -> Account:
     """The account at `path`, made with the type the person chose, with any
     parent the chart lacks made the same type (in QuickBooks a sub-account
-    shares its parent's)."""
+    shares its parent's), each by the chart's own rules: one they refuse
+    is a DataProblem in a sentence, before anything posts (#663)."""
+    from fastapi import HTTPException
+
+    from app.routes.accounts import check_new_account
     from app.services.iif_import import _account_at_path
 
     segments = [part.strip() for part in path.split(":") if part.strip()]
@@ -711,12 +786,21 @@ def _make_account(db: Session, path: str, detail: DetailType) -> Account:
     for depth in range(1, len(segments) + 1):
         acct = _account_at_path(db, segments[:depth])
         if acct is None:
+            data = _new_account(segments[depth - 1], detail, parent)
+            try:
+                check_new_account(db, data)
+            except HTTPException as e:
+                raise DataProblem(
+                    f"{path} cannot be made as {DETAIL_TYPES[detail][0]}: "
+                    + _sentence(e.detail)
+                ) from None
             acct = Account(
-                name=segments[depth - 1][:200],
-                account_type=BASE_TYPE_OF[detail],
-                detail_type=detail,
-                bank_kind=_BANK_KINDS.get(detail),
-                parent_id=parent.id if parent is not None else None,
+                name=data.name,
+                account_type=data.account_type,
+                parent_id=data.parent_id,
+                # as the rules settled it (a sub-account's is its parent's)
+                detail_type=getattr(data.detail_type, "value", data.detail_type),
+                bank_kind=data.bank_kind,
                 balance=Decimal("0"),
             )
             db.add(acct)
@@ -999,6 +1083,9 @@ def _problems(
                 "key": target,
                 "path": target,
                 "transactions": n,
+                # the types the chart's rules let it be made with, the one
+                # to start on and, when none fits, why
+                **_account_choices(db, target),
                 "text": f"{target} is not in the chart ({touching})",
             }
         )

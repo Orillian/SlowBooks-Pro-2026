@@ -302,12 +302,16 @@ const IIFPage = {
         </div>`;
     },
 
-    _typeOptions(types) {
+    // The types an account can be made with: QuickBooks' own, or, for a
+    // sub-account, those the chart's rules let it take under its parent
+    // (#663), starting on the parent's.
+    _typeOptions(types, allowed, start) {
         const headings = { asset: 'Assets', liability: 'Liabilities', equity: T('Equity'),
             income: T('Income'), cogs: 'Cost of Goods Sold', expense: 'Expenses' };
+        const ok = Array.isArray(allowed) ? new Set(allowed) : null;
         return '<option value="">Choose a type…</option>' + Object.keys(headings).map(t => {
-            const opts = types.filter(d => d.account_type === t)
-                .map(d => `<option value="${escapeHtml(d.value)}">${escapeHtml(T(d.label))}</option>`).join('');
+            const opts = types.filter(d => d.account_type === t && (!ok || ok.has(d.value)))
+                .map(d => `<option value="${escapeHtml(d.value)}"${d.value === start ? ' selected' : ''}>${escapeHtml(T(d.label))}</option>`).join('');
             return opts ? `<optgroup label="${escapeHtml(headings[t])}">${opts}</optgroup>` : '';
         }).join('');
     },
@@ -347,13 +351,19 @@ const IIFPage = {
             </section>`;
         }
         if (accounts.length) {
-            const options = IIFPage._typeOptions(result.account_types || []);
-            const rows = accounts.map(p => `<tr>
-                    <td class="qbr-pick-cell"><input type="checkbox" class="qbr-pick" data-kind="missing_account" data-key="${escapeHtml(p.key)}" aria-label="Make the account ${escapeHtml(p.path)}" aria-describedby="qbr-type-hint" disabled onchange="IIFPage._reviewChanged()"></td>
-                    <td>${escapeHtml(p.path)}</td>
+            const rows = accounts.map(p => {
+                // a sub-account's types are its parent's; one that can take
+                // none (an inactive parent) says why and cannot be made
+                const start = p.type && (!p.types || p.types.includes(p.type)) ? p.type : '';
+                const none = Array.isArray(p.types) && !p.types.length;
+                const options = IIFPage._typeOptions(result.account_types || [], p.types, start);
+                return `<tr>
+                    <td class="qbr-pick-cell"><input type="checkbox" class="qbr-pick" data-kind="missing_account" data-key="${escapeHtml(p.key)}" aria-label="Make the account ${escapeHtml(p.path)}" aria-describedby="qbr-type-hint"${start ? '' : ' disabled'} onchange="IIFPage._reviewChanged()"></td>
+                    <td>${escapeHtml(p.path)}${none && p.why ? `<br><span class="qbr-hint">${escapeHtml(p.why)}</span>` : ''}</td>
                     <td class="amount">${Number(p.transactions).toLocaleString()}</td>
-                    <td><select class="qbr-type" data-no-search aria-label="Type for ${escapeHtml(p.path)}" onchange="IIFPage.reviewTyped(this)">${options}</select></td>
-                </tr>`).join('');
+                    <td><select class="qbr-type" data-no-search aria-label="Type for ${escapeHtml(p.path)}"${none ? ' disabled' : ''} onchange="IIFPage.reviewTyped(this)">${options}</select></td>
+                </tr>`;
+            }).join('');
             html += `<section class="qbr-group" data-kind="missing_account" aria-labelledby="qbr-h-missing_account">
                 <h5 id="qbr-h-missing_account">${IIFPage._count(accounts.length, 'account')} not in the chart</h5>
                 <p class="qbr-note">${escapeHtml(notes.missing_account || '')} <span id="qbr-type-hint">An account is ticked once it has a type.</span></p>

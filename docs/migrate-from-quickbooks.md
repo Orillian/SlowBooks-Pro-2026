@@ -155,7 +155,12 @@ grouped, for you to tick the ones to accept and leave the rest:
 - **An account not in the chart**, once, with how many transactions touch
   it. Choose its type (QuickBooks' own types, Bank to Other Expense) and it
   is ticked to be made; the lists IIF is still the better way to bring the
-  chart. A transaction that touches an account left unticked is left out.
+  chart. A sub-account of an account already in the chart is made by the
+  chart's own rules: it is offered only the types its parent takes (the
+  parent's own, or under a bank, card, A/R or A/P account another of its
+  kind), starting on the parent's, and one the chart cannot take there (an
+  inactive parent, a chain too deep) says why. A transaction that touches
+  an account left unticked is left out.
 - **The file may be cut off**: a section whose lines do not add up to the
   total QuickBooks printed, a file that ends inside a section, or a row that
   cannot be read. Ticked, what is there imports; unticked, nothing does.

@@ -1210,6 +1210,101 @@ def test_a_transaction_that_replaces_a_partial_entry_is_listed_beside_it(browser
         page.close()
 
 
+# Accounts the chart lacks (#663): a sub-account offered its parent's types
+# only, starting on the parent's, and one under an inactive parent none.
+LEDGER_ACCOUNTS = {
+    "detected": "ledger",
+    "journals": 0,
+    "duplicates_skipped": 0,
+    "errors": [],
+    "warnings": [],
+    "ready": 3,
+    "file_sha256": "cd" * 32,
+    "problems": [
+        {
+            "kind": "missing_account",
+            "key": "Office Supplies:Toner",
+            "path": "Office Supplies:Toner",
+            "transactions": 1,
+            "types": ["expense"],
+            "type": "expense",
+            "why": None,
+            "text": "Office Supplies:Toner is not in the chart (1 transaction)",
+        },
+        {
+            "kind": "missing_account",
+            "key": "Checking:Petty Cash",
+            "path": "Checking:Petty Cash",
+            "transactions": 2,
+            "types": ["bank", "other_current_asset"],
+            "type": "bank",
+            "why": None,
+            "text": "Checking:Petty Cash is not in the chart (2 transactions)",
+        },
+        {
+            "kind": "missing_account",
+            "key": "Old Expenses:Postage",
+            "path": "Old Expenses:Postage",
+            "transactions": 1,
+            "types": [],
+            "type": None,
+            "why": "6990 Old Expenses is inactive and cannot take sub-accounts. "
+            "Reactivate it, or choose another parent.",
+            "text": "Old Expenses:Postage is not in the chart (1 transaction)",
+        },
+    ],
+    "problem_notes": {"missing_account": "These accounts are not in the chart."},
+    "account_types": LEDGER_PROBLEMS["account_types"]
+    + [
+        {
+            "value": "other_current_asset",
+            "label": "Other Current Asset",
+            "account_type": "asset",
+        },
+        {"value": "income", "label": "Income", "account_type": "income"},
+    ],
+}
+
+
+def test_a_sub_account_is_offered_the_types_its_parent_takes(browser):
+    sent = []
+    page = _problem_page(browser, sent, LEDGER_ACCOUNTS)
+    try:
+        choices = page.evaluate(
+            """() => [...document.querySelectorAll('#qbr select.qbr-type')].map(s => ({
+                value: s.value,
+                disabled: s.disabled,
+                offered: [...s.options].filter(o => o.value).map(o => o.value),
+            }))"""
+        )
+        assert choices == [
+            {"value": "expense", "disabled": False, "offered": ["expense"]},
+            {
+                "value": "bank",
+                "disabled": False,
+                "offered": ["bank", "other_current_asset"],
+            },
+            {"value": "", "disabled": True, "offered": []},
+        ]
+        boxes = page.locator("#qbr input.qbr-pick[data-kind=missing_account]")
+        # a type to start on is not a tick: nothing is ticked to start with
+        assert [boxes.nth(i).is_checked() for i in range(3)] == [False] * 3
+        assert [boxes.nth(i).is_enabled() for i in range(3)] == [True, True, False]
+        assert "is inactive and cannot take sub-accounts" in page.inner_text(
+            "#qbr [data-kind=missing_account] tbody tr:nth-child(3)"
+        )
+        page.get_by_role(
+            "checkbox", name="Make the account Office Supplies:Toner"
+        ).check()
+        page.click("#qbr-import")
+        page.wait_for_selector("#qbcsv-import-result .iif-results:not(.qbr)")
+        assert json.loads(_form_field(sent[1], "answers"))["accounts"] == {
+            "Office Supplies:Toner": "expense"
+        }
+    finally:
+        page.close()
+
+
 def test_the_problem_list_reads_at_aa_in_both_themes(browser):
     from tests.test_theme_contrast import _theme, below_threshold, sweep_of
 

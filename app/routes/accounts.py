@@ -634,8 +634,14 @@ def _in_company_words(db: Session, accounts):
     return out
 
 
-@router.post("", response_model=AccountResponse, status_code=201)
-def create_account(data: AccountCreate, db: Session = Depends(get_db)):
+def check_new_account(db: Session, data: AccountCreate) -> None:
+    """The chart's rules for a new account, as POST /api/accounts applies
+    them: the bank kind for the type, the detail type (a sub-account's from
+    its parent; set on ``data``), the number, an active parent, the depth,
+    a pinned parent's base type, and the control-account numbers. Raises
+    HTTPException with the sentence; writes nothing. QuickBooks Desktop's
+    ledger import makes the accounts a person chooses through it too
+    (#663)."""
     _check_bank_kind(data.bank_kind, data.account_type)
     data.detail_type = _create_detail_type(db, data)
     _check_account_number(data.account_number)
@@ -653,6 +659,11 @@ def create_account(data: AccountCreate, db: Session = Depends(get_db)):
         db.get(Account, data.parent_id) if data.parent_id else None, data.account_type
     )
     _reject_reserved_number(data.account_number, data.name, data.account_type)
+
+
+@router.post("", response_model=AccountResponse, status_code=201)
+def create_account(data: AccountCreate, db: Session = Depends(get_db)):
+    check_new_account(db, data)
     account = Account(**data.model_dump())
     # Restoring a SEEDED control account (the guard above let it through as
     # the registry's name and type) brings it back is_system=True, as the seed
