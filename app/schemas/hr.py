@@ -20,7 +20,8 @@ class OnboardingTaskUpdate(StrictModel):
 
 
 class OnboardingTaskResponse(BaseModel):
-    id: int
+    # None on a task of the default checklist before it is saved (#662)
+    id: Optional[int] = None
     employee_id: int
     task_type: str
     status: str

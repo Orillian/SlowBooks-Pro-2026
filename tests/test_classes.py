@@ -13,9 +13,16 @@ from app.services.classes_service import uncategorized_class_id
 # ── CRUD + protections ───────────────────────────────────────────────────
 
 
-def test_list_creates_system_default(client):
+def test_the_first_class_brings_the_system_default(client):
+    # the list is a read: it never makes the default (#662); the company
+    # file's migration does, and so does the first class made
+    assert client.get("/api/classes").json() == []
+    client.post("/api/classes", json={"name": "Retail"})
     classes = client.get("/api/classes").json()
-    assert any(c["is_system_default"] and c["name"] == "Uncategorized" for c in classes)
+    assert [(c["name"], c["is_system_default"]) for c in classes] == [
+        ("Uncategorized", True),
+        ("Retail", False),
+    ]
 
 
 def test_create_rename_archive_delete(client):
@@ -37,7 +44,9 @@ def test_create_rename_archive_delete(client):
     assert deleted.status_code == 200
 
 
-def test_system_default_is_immutable(client):
+def test_system_default_is_immutable(client, db_session):
+    uncategorized_class_id(db_session)
+    db_session.commit()
     default = next(
         c for c in client.get("/api/classes").json() if c["is_system_default"]
     )

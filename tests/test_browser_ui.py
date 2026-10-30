@@ -31,6 +31,10 @@ or its Chromium is not installed.
   edge, behind a sideways scrollbar. Opened for an employee with a state in
   Q1 and Q2 at 1280 x 800, in both themes; the state inputs still take the
   keyboard in order.
+- #662: reading an employee's onboarding checklist no longer saves the
+  default one; the read answers it with no task ids. The Onboarding list
+  still reads 0 of 8, and View Checklist saves it before showing it, so
+  every Complete button names a saved task.
 """
 
 import json
@@ -490,6 +494,85 @@ def test_the_opening_quarters_fit_the_employee_dialog(browser):
                 f"Q{n} GA Other (employer)",
                 "Remove",
             ]
+    finally:
+        page.close()
+
+
+ONBOARDING_TASKS = (
+    "w4",
+    "i9_section1",
+    "i9_section2",
+    "everify",
+    "direct_deposit",
+    "state_new_hire_report",
+    "policy_acknowledgment",
+    "emergency_contact",
+)
+FIRST_ROW = """() => [...document.querySelector('#page-content tbody tr').cells]
+    .map(c => c.textContent.trim())"""
+COMPLETE_CALLS = """() => [...document.querySelectorAll('#modal-body tbody button')]
+    .map(b => b.getAttribute('onclick'))"""
+
+
+def _onboarding_checklist(saved):
+    return {
+        "employee_id": 1,
+        "employee_name": "Lena Ortiz",
+        "complete": 0,
+        "total": len(ONBOARDING_TASKS),
+        "percent_complete": 0.0,
+        "tasks": [
+            {
+                "id": n if saved else None,
+                "employee_id": 1,
+                "task_type": task,
+                "status": "pending",
+                "signed": False,
+            }
+            for n, task in enumerate(ONBOARDING_TASKS, start=101)
+        ],
+    }
+
+
+def test_an_unsaved_onboarding_checklist_is_saved_when_it_is_opened(browser):
+    """The read answers an employee's default checklist without saving it,
+    its tasks without ids (#662). The list shows it as 0 of 8; View
+    Checklist saves it (POST /onboarding/1/seed) and then shows it, every
+    Complete button naming a saved task."""
+    seeded = []
+
+    def hr(route):
+        req = route.request
+        path = urlsplit(req.url).path
+        if path == "/api/employees":
+            body = [{"id": 1, "first_name": "Lena", "last_name": "Ortiz"}]
+        elif path == "/api/onboarding/1/seed" and req.method == "POST":
+            seeded.append(path)
+            body = _onboarding_checklist(saved=True)
+        elif path == "/api/onboarding/1" and req.method == "GET":
+            body = _onboarding_checklist(saved=bool(seeded))
+        else:
+            return route.fallback()
+        return route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(body)
+        )
+
+    page = _open_raw(browser, 1280, 800)
+    page.route("**/api/employees*", hr)
+    page.route("**/api/onboarding/**", hr)
+    try:
+        page.goto(f"{ORIGIN}/#/hr/onboarding")
+        page.wait_for_function("window.App && document.readyState === 'complete'")
+        page.click("#splash-dismiss")
+        page.wait_for_selector("#page-content tbody tr")
+        assert page.evaluate(FIRST_ROW)[:4] == ["Lena Ortiz", "0", "8", "0%"]
+        assert seeded == []  # the list only reads
+        page.click("#page-content tbody button:has-text('View Checklist')")
+        page.wait_for_selector("#modal-body tbody tr")
+        assert seeded == ["/api/onboarding/1/seed"]
+        assert page.evaluate(COMPLETE_CALLS) == [
+            f"OnboardingPage.completeTask({n}, 1)" for n in range(101, 109)
+        ]
     finally:
         page.close()
 

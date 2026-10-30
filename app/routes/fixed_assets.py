@@ -157,13 +157,9 @@ def _payloads(db: Session, assets: list) -> list[dict]:
 
 @router.get("/types")
 def list_types(include_inactive: bool = False, db: Session = Depends(get_db)):
-    # Companies created before 2.9.0 have no types at all; give them the
-    # same default a new company gets, the first time the page asks.
-    if db.query(FixedAssetType.id).first() is None:
-        from app.seed.fixed_assets import ensure_default_asset_type
-
-        if ensure_default_asset_type(db) is not None:
-            db.commit()
+    # The company's own types. A new company gets the default one at setup,
+    # books from before 2.9.0 got it from the migration; a read never makes
+    # it (#662).
     q = db.query(FixedAssetType)
     if not include_inactive:
         q = q.filter(FixedAssetType.is_active.is_(True))

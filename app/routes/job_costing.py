@@ -63,8 +63,8 @@ def _account_or_404(db: Session, account_id: Optional[int]):
 
 @cost_types_router.get("", response_model=list[CostTypeResponse])
 def list_cost_types(include_inactive: bool = False, db: Session = Depends(get_db)):
-    ensure_default_cost_types(db)
-    db.commit()
+    # the company's own: the migration and the first write seed the five
+    # starting types, a read never does (#662)
     q = db.query(CostType)
     if not include_inactive:
         q = q.filter(CostType.is_active.is_(True))

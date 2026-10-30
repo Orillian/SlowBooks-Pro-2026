@@ -364,10 +364,10 @@ def line_scope(db: Session, class_id: int | None = None, job_id: int | None = No
     if class_id is not None:
         from app.services.classes_service import (
             class_attribution,
-            uncategorized_class_id,
+            find_uncategorized_class_id,
         )
 
-        test = class_attribution(uncategorized_class_id(db)) == class_id
+        test = class_attribution(find_uncategorized_class_id(db)) == class_id
     if job_id is not None:
         from app.services.jobs_service import job_attribution
 

@@ -524,9 +524,9 @@ def ctc_forecast(db: Session, job: Job, as_of: Optional[date] = None) -> dict:
     amount (or None) and the cost to complete that counts. `has_basis` is False
     when the job has no budget and no typed amounts — nothing to measure
     percent complete against."""
-    from app.services.job_costing import cost_type_map
+    from app.services.job_costing import read_cost_type_map
 
-    types = cost_type_map(db)
+    types = read_cost_type_map(db)
     code_by_id = {c.id: c for c in db.query(CostCode).all()}
 
     def eff_type(code_id, line_type):

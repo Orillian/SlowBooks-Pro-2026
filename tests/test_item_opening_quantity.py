@@ -155,7 +155,12 @@ def test_a_sale_after_opening_posts_cogs_at_opening_cost(
 # --- Review of the PR (Trent, VonHoltenCodes): six follow-ups. ---
 
 
-def _default_asset_type(client):
+def _default_asset_type(client, db_session):
+    # the type a new company gets at setup (a read never makes it: #662)
+    from app.seed.fixed_assets import ensure_default_asset_type
+
+    ensure_default_asset_type(db_session)
+    db_session.commit()
     types = client.get("/api/fixed-assets/types").json()
     return types[0]
 
@@ -168,7 +173,7 @@ def test_opening_entry_does_not_block_a_fixed_asset_with_the_same_id(
     is no longer read as already purchased and can still be posted."""
     item = _create(client, seed_accounts).json()
 
-    atype = _default_asset_type(client)
+    atype = _default_asset_type(client, db_session)
     r = client.post(
         "/api/fixed-assets",
         json={

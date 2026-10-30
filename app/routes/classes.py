@@ -2,10 +2,11 @@
 # Classes — CRUD for the QB-style tracking dimension.
 #
 # The system-default "Uncategorized" row is immutable: no rename, no
-# archive, no delete — by-class reports rely on it always existing as the
-# bucket for untagged activity. Classes referenced by any document or
-# transaction can be archived (hidden from dropdowns) but never deleted,
-# so historical reports stay stable.
+# archive, no delete — by-class reports use it as the bucket for untagged
+# activity. It comes with the company file (its migration) or with the
+# first class made; a read never makes it (#662). Classes referenced by
+# any document or transaction can be archived (hidden from dropdowns) but
+# never deleted, so historical reports stay stable.
 # ============================================================================
 
 from datetime import date
@@ -19,7 +20,11 @@ from app.models.accounts import Account, AccountType
 from app.models.classes import TxnClass
 from app.models.transactions import Transaction, TransactionLine
 from app.schemas.classes import ClassCreate, ClassResponse, ClassUpdate
-from app.services.classes_service import class_attribution, uncategorized_class_id
+from app.services.classes_service import (
+    class_attribution,
+    find_uncategorized_class_id,
+    uncategorized_class_id,
+)
 from app.services.fiscal_year import fiscal_year_start
 
 router = APIRouter(prefix="/api/classes", tags=["classes"])
@@ -56,9 +61,6 @@ def _dates(db, start_date, end_date):
 
 @router.get("", response_model=list[ClassResponse])
 def list_classes(include_archived: bool = False, db: Session = Depends(get_db)):
-    # Ensure the default row exists before the first listing renders.
-    uncategorized_class_id(db)
-    db.commit()
     q = db.query(TxnClass)
     if not include_archived:
         q = q.filter(TxnClass.is_archived.is_(False))
@@ -83,8 +85,6 @@ def classes_activity(
     from app.routes.reports.financial import profit_loss_by_class
 
     start_date, end_date = _dates(db, start_date, end_date)
-    uncategorized_class_id(db)
-    db.commit()
     report = profit_loss_by_class(start_date, end_date, db)
     by_id = {c["class_id"]: c for c in report["classes"]}
     # the grid's figures: income and expenses include Other Income / Other
@@ -110,18 +110,21 @@ def classes_activity(
         figures = by_id.get(c.id) or {k: 0.0 for k in keys}
         rows.append({**_class_dict(c), **{k: float(figures[k]) for k in keys}})
     # a class deleted since it was used would be a column with no row: kept
-    # as "Unknown", so the rows still add up to the P&L
+    # as "Unknown", so the rows still add up to the P&L; so is untagged
+    # activity while the company has no default class (None, #662), first
     for cid, figures in by_id.items():
         if cid not in known:
-            rows.append(
-                {
-                    "id": cid,
-                    "name": figures["class_name"],
-                    "is_archived": False,
-                    "is_system_default": False,
-                    **{k: float(figures[k]) for k in keys},
-                }
-            )
+            row = {
+                "id": cid,
+                "name": figures["class_name"],
+                "is_archived": False,
+                "is_system_default": cid is None,
+                **{k: float(figures[k]) for k in keys},
+            }
+            if cid is None:
+                rows.insert(0, row)
+            else:
+                rows.append(row)
     totals = {k: float(sum(Decimal(str(r[k])) for r in rows)) for k in keys}
     company = {
         "income": float(report["total_income"]),
@@ -194,8 +197,7 @@ def class_transactions(
     )
 
     cls = _class_or_404(db, class_id)
-    uncat_id = uncategorized_class_id(db)
-    db.commit()
+    uncat_id = find_uncategorized_class_id(db)
     q = (
         db.query(TransactionLine, Transaction, Account)
         .join(Transaction, TransactionLine.transaction_id == Transaction.id)
@@ -259,6 +261,9 @@ def class_transactions(
 
 @router.post("", response_model=ClassResponse, status_code=201)
 def create_class(data: ClassCreate, db: Session = Depends(get_db)):
+    # the system default comes with the first class (#662); made before the
+    # name check, so a class named Uncategorized meets it there
+    uncategorized_class_id(db)
     existing = db.query(TxnClass).filter(TxnClass.name.ilike(data.name)).first()
     if existing:
         raise HTTPException(

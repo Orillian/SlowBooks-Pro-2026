@@ -44,14 +44,15 @@ from app.models.classes import FUNCTIONS, TxnClass
 from app.models.transactions import Transaction, TransactionLine
 from app.services import cash_basis
 from app.services.accounting import (
+    NONPROFIT_ACCOUNTS,
     _q,
-    get_net_assets_with_restriction_id,
-    get_net_assets_without_restriction_id,
+    find_nonprofit_account,
 )
 from app.services.classes_service import (
+    UNCATEGORIZED_NAME,
     class_attribution,
+    find_uncategorized_class_id,
     restricted_class_ids,
-    uncategorized_class_id,
 )
 from app.services.csv_export import _SafeWriter
 from app.services.statement_layout import (
@@ -140,7 +141,7 @@ def _class_totals(
 ) -> list[tuple]:
     """(class_id, account_id, account_name, account_number, account_type,
     debit, credit) grouped by the fund a line belongs to."""
-    uncat = uncategorized_class_id(db)
+    uncat = find_uncategorized_class_id(db)
     cls = class_attribution(uncat).label("cls")
     q = (
         db.query(
@@ -214,7 +215,9 @@ def _net_releases(
 ) -> Decimal:
     """Net debits on Net Assets With Donor Restrictions in the period —
     releases, less any voided ones."""
-    with_id = get_net_assets_with_restriction_id(db)
+    with_acct = find_nonprofit_account(db, "3400")
+    if with_acct is None:
+        return ZERO
     q = (
         db.query(
             sqlfunc.coalesce(
@@ -223,7 +226,7 @@ def _net_releases(
         )
         .select_from(Transaction)
         .join(TransactionLine, TransactionLine.transaction_id == Transaction.id)
-        .filter(TransactionLine.account_id == with_id)
+        .filter(TransactionLine.account_id == with_acct.id)
     )
     if start is not None:
         q = q.filter(Transaction.date >= start)
@@ -235,11 +238,23 @@ def _net_releases(
 # ── Statement of Financial Position ──────────────────────────────────────
 
 
+def _net_asset_account(db: Session, number: str) -> tuple:
+    """(id, name, number) of a net-asset account, 3300 or 3400. While the
+    chart has none (a read never adds it, #662) it is the row the account
+    would be, with no id: its name, and its number unless the chart uses it."""
+    acct = find_nonprofit_account(db, number)
+    if acct is not None:
+        return acct.id, acct.name, acct.account_number
+    name = next(n for num, n, _t in NONPROFIT_ACCOUNTS if num == number)
+    taken = db.query(Account.id).filter(Account.account_number == number).first()
+    return None, name, None if taken else number
+
+
 def statement_of_financial_position(
     db: Session, as_of: date, basis: str = "accrual"
 ) -> dict:
-    with_id = get_net_assets_with_restriction_id(db)
-    without_id = get_net_assets_without_restriction_id(db)
+    with_id, with_name, with_number = _net_asset_account(db, "3400")
+    without_id, without_name, without_number = _net_asset_account(db, "3300")
     # a default-typed sub-account prints in its parent's group, as on the
     # Balance Sheet (2.28.0): display only
     placed = bs_print_details(db)
@@ -272,13 +287,11 @@ def statement_of_financial_position(
     without_composed = real.get(without_id, ZERO) + income_without - expenses
     with_composed = real.get(with_id, ZERO) + income_with
 
-    with_acct = db.get(Account, with_id)
-    without_acct = db.get(Account, without_id)
     net_assets = list(other_equity) + [
         {
             "account_id": without_id,
-            "account_name": without_acct.name,
-            "account_number": without_acct.account_number,
+            "account_name": without_name,
+            "account_number": without_number,
             "amount": _f(without_composed),
             "detail": {
                 "opening": _f(real.get(without_id, ZERO)),
@@ -287,8 +300,8 @@ def statement_of_financial_position(
         },
         {
             "account_id": with_id,
-            "account_name": with_acct.name,
-            "account_number": with_acct.account_number,
+            "account_name": with_name,
+            "account_number": with_number,
             "amount": _f(with_composed),
             "detail": {
                 "opening": _f(real.get(with_id, ZERO)),
@@ -428,8 +441,9 @@ def _activities_layout(db: Session, data: dict) -> dict:
 def _periodized_by_class(
     db: Session, amount_expr, filters: list, start: date, end: date
 ) -> dict[int, tuple[Decimal, Decimal]]:
-    """{class_id: (before start, within period)} for a signed line amount."""
-    uncat = uncategorized_class_id(db)
+    """{class_id: (before start, within period)} for a signed line amount;
+    None for untagged lines while the company has no default class."""
+    uncat = find_uncategorized_class_id(db)
     cls = class_attribution(uncat).label("cls")
     before = sqlfunc.coalesce(
         sqlfunc.sum(case((Transaction.date < start, amount_expr), else_=0)), 0
@@ -451,12 +465,12 @@ def _periodized_by_class(
         .filter(Transaction.date <= end, *filters)
         .group_by(cls)
     )
-    return {int(c): (_dec(b), _dec(w)) for c, b, w in q.all()}
+    return {(None if c is None else int(c)): (_dec(b), _dec(w)) for c, b, w in q.all()}
 
 
 def fund_balances(db: Session, start: date, end: date) -> dict:
     restricted = restricted_class_ids(db)
-    with_id = get_net_assets_with_restriction_id(db)
+    with_acct = find_nonprofit_account(db, "3400")
     income = _periodized_by_class(
         db,
         TransactionLine.credit - TransactionLine.debit,
@@ -471,12 +485,16 @@ def fund_balances(db: Session, start: date, end: date) -> dict:
         start,
         end,
     )
-    released = _periodized_by_class(
-        db,
-        TransactionLine.debit - TransactionLine.credit,
-        [TransactionLine.account_id == with_id],
-        start,
-        end,
+    released = (
+        _periodized_by_class(
+            db,
+            TransactionLine.debit - TransactionLine.credit,
+            [TransactionLine.account_id == with_acct.id],
+            start,
+            end,
+        )
+        if with_acct is not None
+        else {}
     )
     names = {c.id: c for c in db.query(TxnClass).all()}
     funds = []
@@ -570,7 +588,7 @@ def fund_balances(db: Session, start: date, end: date) -> dict:
 def functional_expenses(
     db: Session, start: date, end: date, basis: str = "accrual"
 ) -> dict:
-    uncat = uncategorized_class_id(db)
+    uncat = find_uncategorized_class_id(db)
     cls = class_attribution(uncat)
     fn = sqlfunc.coalesce(TransactionLine.function, TxnClass.default_function).label(
         "fn"
@@ -599,6 +617,7 @@ def functional_expenses(
         .execution_options(**cash_basis.reading(basis))
     )
     names = {c.id: c.name for c in db.query(TxnClass.id, TxnClass.name).all()}
+    names[None] = UNCATEGORIZED_NAME
     rows: dict[int, dict] = {}
     programs: dict[int, Decimal] = {}
     cols = list(FUNCTIONS) + ["unassigned"]

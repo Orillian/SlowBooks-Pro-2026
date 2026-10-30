@@ -12,7 +12,12 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.routes._helpers import reject_null_updates
 from app.models.payroll import Employee
-from app.models.hr import OnboardingTask, OnboardingTaskType, OnboardingTaskStatus
+from app.models.hr import (
+    DEFAULT_ONBOARDING_TASKS,
+    OnboardingTask,
+    OnboardingTaskStatus,
+    OnboardingTaskType,
+)
 from app.schemas.hr import (
     OnboardingTaskCreate,
     OnboardingTaskUpdate,
@@ -42,7 +47,17 @@ def _checklist(db: Session, emp: Employee) -> OnboardingChecklistResponse:
         .filter(OnboardingTask.employee_id == emp.id)
         .order_by(OnboardingTask.id)
         .all()
-    )
+    ) or [
+        # none saved yet: the default checklist, unsaved (a read never
+        # writes, #662); POST /{emp_id}/seed saves it
+        OnboardingTask(
+            employee_id=emp.id,
+            task_type=task_type,
+            status=OnboardingTaskStatus.PENDING,
+            signed=False,
+        )
+        for task_type in DEFAULT_ONBOARDING_TASKS
+    ]
     summary = checklist_summary(tasks)
     return OnboardingChecklistResponse(
         employee_id=emp.id,
@@ -56,17 +71,12 @@ def _checklist(db: Session, emp: Employee) -> OnboardingChecklistResponse:
 
 @router.get("/{emp_id}", response_model=OnboardingChecklistResponse)
 def get_checklist(emp_id: int, db: Session = Depends(get_db)):
-    """Return an employee's onboarding checklist, seeding it on first access."""
+    """Return an employee's onboarding checklist. One never saved is the
+    default checklist, its tasks without ids: a read never writes (#662),
+    and POST /{emp_id}/seed saves it."""
     emp = db.query(Employee).filter(Employee.id == emp_id).first()
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
-    if (
-        not db.query(OnboardingTask)
-        .filter(OnboardingTask.employee_id == emp_id)
-        .first()
-    ):
-        seed_onboarding_tasks(db, emp_id)
-        db.commit()
     return _checklist(db, emp)
 
 

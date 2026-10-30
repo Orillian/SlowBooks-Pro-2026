@@ -667,12 +667,17 @@ def db():
 
 
 @pytest.fixture(name="books")
-def books_fixture(client, seed_accounts):
+def books_fixture(client, seed_accounts, db_session):
     """The bakery's books (tests/bakery_books.py), entered through the API:
     the company the browser modules and the report-link tests run on. Here
     rather than in tests/test_theme_contrast.py, which skips as a module
     without Playwright and took every importer of the fixture with it
-    (2.22.0 Windows gate, W-2)."""
+    (2.22.0 Windows gate, W-2). A company file has its Uncategorized class
+    from the migration that made the table, and no read makes it (#662),
+    so the books start with it."""
+    from app.services.classes_service import uncategorized_class_id
     from tests.bakery_books import seed_books
 
+    uncategorized_class_id(db_session)
+    db_session.commit()
     return seed_books(client, seed_accounts)

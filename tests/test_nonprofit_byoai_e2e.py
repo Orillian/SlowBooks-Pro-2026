@@ -104,9 +104,8 @@ def test_nonprofit_year_through_the_api(client, seed_accounts, monkeypatch):
     assert titles["receivables"] == "Pledges Receivable"
     assert titles["active_customers"] == "Active Donors"
     assert "job_budget_vs_actual" in widgets["default_order"]
-    assert {"restriction", "default_function"} <= set(
-        reader.get("/api/classes").json()[0]
-    )
+    # a read never makes the default fund (#662); the first fund made does
+    assert reader.get("/api/classes").json() == []
 
     # ---- Riverbend, condensed, as the bookkeeper's agent --------------------
     def fund(name, restriction, function):
@@ -125,6 +124,9 @@ def test_nonprofit_year_through_the_api(client, seed_accounts, monkeypatch):
     youth = fund("Youth Program", "temporarily_restricted", "program")
     endow = fund("Scholarship Endowment", "permanently_restricted", "program")
     gala = fund("Spring Gala", "unrestricted", "fundraising")
+    funds = reader.get("/api/classes").json()
+    assert funds[0]["name"] == "Uncategorized" and funds[0]["is_system_default"]
+    assert {"restriction", "default_function"} <= set(funds[0])
 
     foundation = _ok(
         keeper.post(

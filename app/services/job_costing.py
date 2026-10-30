@@ -63,7 +63,9 @@ def _q(v) -> Decimal:
 
 def ensure_default_cost_types(db: Session) -> None:
     """Seed the five starting types on first use (fresh test databases and
-    companies created before the migration converge on the same rows)."""
+    companies created before the migration converge on the same rows). For
+    the write paths; a read takes read_cost_type_map, which never seeds
+    (#662)."""
     existing = {r.code for r in db.query(CostType).all()}
     added = False
     for code, name, is_labor, order in DEFAULT_COST_TYPES:
@@ -77,6 +79,24 @@ def ensure_default_cost_types(db: Session) -> None:
 def cost_type_map(db: Session) -> dict[str, CostType]:
     ensure_default_cost_types(db)
     return {r.code: r for r in db.query(CostType).all()}
+
+
+def read_cost_type_map(db: Session) -> dict[str, CostType]:
+    """The cost types by code, for a read: the company's own, or the five
+    starting types unsaved while it has none (a read never seeds them,
+    #662)."""
+    rows = db.query(CostType).all() or [
+        CostType(
+            code=code,
+            name=name,
+            is_labor=is_labor,
+            sort_order=order,
+            burden_method="flat",
+            is_active=True,
+        )
+        for code, name, is_labor, order in DEFAULT_COST_TYPES
+    ]
+    return {r.code: r for r in rows}
 
 
 def line_cost_type(
@@ -965,7 +985,7 @@ def job_cost_tree(
     every level carrying budget / committed / actual / projected /
     variance and the revenue pair. Budgets and committed cost are
     job-to-date (a budget has no period); actuals honour the period."""
-    types = cost_type_map(db)
+    types = read_cost_type_map(db)
     ordered_types = sorted(types.values(), key=lambda t: (t.sort_order, t.code))
     codes = db.query(CostCode).all()
     code_by_id = {c.id: c for c in codes}

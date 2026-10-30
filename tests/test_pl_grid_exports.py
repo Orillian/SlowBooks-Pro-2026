@@ -623,7 +623,9 @@ def test_the_by_job_columns_are_chosen_like_the_by_class_ones(client, jobbed):
     assert r.status_code == 201, r.text
 
 
-def test_the_drill_down_takes_a_job_and_agrees_with_the_job_page(client, jobbed):
+def test_the_drill_down_takes_a_job_and_agrees_with_the_job_page(
+    client, db_session, jobbed
+):
     kitchen = jobbed["kitchen"]
     base = f"/api/reports/account-transactions?account_id={jobbed['expense']}&{PERIOD}"
     mine = client.get(f"{base}&job_id={kitchen}").json()
@@ -653,7 +655,12 @@ def test_the_drill_down_takes_a_job_and_agrees_with_the_job_page(client, jobbed)
     everything = client.get(base).json()
     assert everything["job_id"] is None
     assert everything["period_net"] == mine["period_net"] + untagged["period_net"]
-    # a job and a class at once narrow to both
+    # a job and a class at once narrow to both (the default class is the
+    # company file's, from its migration; a read never makes it: #662)
+    from app.services.classes_service import uncategorized_class_id
+
+    uncategorized_class_id(db_session)
+    db_session.commit()
     uncat = next(c for c in client.get("/api/classes").json() if c["is_system_default"])
     both = client.get(f"{base}&job_id={kitchen}&class_id={uncat['id']}").json()
     assert both["period_net"] == 300.0 and both["class_name"] == "Uncategorized"
