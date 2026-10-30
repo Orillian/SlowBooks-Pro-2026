@@ -628,18 +628,108 @@ const BankingPage = {
     // through them) and sent to the service, which computes the balance
     // brought forward under the same class test.
     _regFilter: { start_date: '', end_date: '', class_id: '' },
+    _regFilterId: null,  // the register it is for
+
+    // The From date each register was last read from (#663), so one worked
+    // from the start of the month opens there, the date in its From box.
+    // Kept in this browser, as a list keeps its Show choice, by sign-in,
+    // company and account; Clear, or a From emptied, forgets it. The
+    // company is the file (or database) the server says is open
+    // (/api/companies, asked once a page load): account ids start again in
+    // every company file, a rename leaves the file as it was, and a company
+    // with no name yet, or still called My Company, has one too, where
+    // /api/auth/status names neither. Failing a file, the company's name
+    // (whose it is, as the Recent list keys its own); a company with
+    // neither keeps no From, so two of them never share one.
+    _companyFile: null,
+    _companyAsked: null,
+    _openCompany() {
+        if (!BankingPage._companyAsked) {
+            BankingPage._companyAsked = Promise.resolve()
+                .then(() => API.get('/companies'))
+                .then(list => {
+                    const open = (Array.isArray(list) ? list : []).find(c => c && c.is_current);
+                    return open ? String(open.file || open.database_name || '') : '';
+                })
+                .catch(() => '')
+                .then(file => { BankingPage._companyFile = file; return file; });
+        }
+        return BankingPage._companyAsked;
+    },
+    _fromKey(id) {
+        const owner = (typeof App !== 'undefined' && App._tabsOwner) || '';
+        const bar = owner.indexOf('|');  // "user|company name"; a username has no |
+        const user = bar < 0 ? '' : owner.slice(0, bar);
+        const name = bar < 0 ? owner : owner.slice(bar + 1);
+        const file = BankingPage._companyFile;
+        const company = file ? `file:${file}` : name ? `name:${name}` : '';
+        return company ? `slowbooks-register-from:${user}|${company}:${id}` : null;
+    },
+    // A From kept for a day after today is not used: it would open the
+    // register on nothing yet, wherever the link came from.
+    _lastFrom(id) {
+        try {
+            const key = BankingPage._fromKey(id);
+            const v = (key && localStorage.getItem(key)) || '';
+            return BankingPage._likelyDate(v) && v <= todayISO() ? v : '';
+        } catch (e) { return ''; }
+    },
+    // A From with a year no books hold (a year typed a digit at a time), or
+    // after today (a look at checks dated ahead), is not kept; the one kept
+    // before it stays.
+    _keepFrom(id, date) {
+        try {
+            const key = BankingPage._fromKey(id);
+            if (!key) return;
+            if (!date) localStorage.removeItem(key);
+            else if (BankingPage._likelyDate(date) && date <= todayISO()) localStorage.setItem(key, date);
+        } catch (e) { /* not kept: the next visit opens on every date */ }
+    },
+
+    // A date the register takes from its boxes, its address or the From it
+    // keeps (#663): a real date in a year the books can hold, 1900 to 2199
+    // (the years a request may carry, app/schemas/common.py). A year typed
+    // a digit at a time reads 0002, 0020 and 0202 before it is 2026.
+    _likelyDate(v) {
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v || ''));
+        if (!m || +m[1] < 1900 || +m[1] > 2199) return false;
+        const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+        return d.getUTCMonth() === +m[2] - 1 && d.getUTCDate() === +m[3];
+    },
+    _yearsSaid: 'the year must be between 1900 and 2199',
+
+    // The address of a register opened to show an entry dated `date`
+    // (#663): on the From it keeps, as any link to it opens, unless that is
+    // after the entry's date and would leave the entry out; then from the
+    // entry's own date. With no From kept it opens on every date.
+    async hrefShowing(accountId, date) {
+        await BankingPage._openCompany();
+        const id = Number(accountId);
+        const from = BankingPage._lastFrom(id);
+        const start = from && date && from > date ? String(date) : from;
+        return `#/banking/${id}${start ? `?start_date=${encodeURIComponent(start)}` : ''}`;
+    },
 
     _regFilterFrom(query) {
         const q = query || {};
         // a date that is not one, or From after To, is said so and ignored
+        const dates = datesFromQuery(q);
+        // and one in a year no books hold (#663)
+        for (const key of ['start_date', 'end_date']) {
+            if (dates[key] && !BankingPage._likelyDate(dates[key])) {
+                toast(`${key} in the address is out of range (${dates[key]}): ${BankingPage._yearsSaid} — ignored`, 'error');
+                dates[key] = '';
+            }
+        }
         return {
-            ...datesFromQuery(q),
+            ...dates,
             class_id: /^\d+$/.test(q.class_id || '') ? q.class_id : '',
         };
     },
 
     _regUrl(id) {
-        const f = BankingPage._regFilter;
+        // one register's filter is not carried to another
+        const f = String(BankingPage._regFilterId) === String(id) ? BankingPage._regFilter : {};
         const q = ['start_date', 'end_date', 'class_id'].filter(k => f[k]).map(k => `${k}=${encodeURIComponent(f[k])}`).join('&');
         return `#/banking/${id}${q ? `?${q}` : ''}`;
     },
@@ -649,12 +739,24 @@ const BankingPage = {
     // the address first, the dates came back through datesFromQuery as
     // "in the address … both ignored", and both boxes were emptied):
     // said, with the filter kept, and the boxes put back to it — the
-    // register, and its address, stay on that filter.
+    // register, and its address, stay on that filter. A date half typed,
+    // or in a year no books hold, is refused the same way, box by box
+    // (#663).
     regFilterChanged(id, filter = null) {
         const was = BankingPage._regFilter;
+        let refused = false;
+        const typed = (sel, word, kept) => {
+            const box = $(sel);
+            const why = BankingPage._dateRefused(box, word);
+            if (!why) return (box && box.value) || '';
+            refused = true;
+            toast(`${why} — kept ${BankingPage._keptWords(was)}`, 'error');
+            BankingPage._putBack(box, kept);
+            return kept || '';
+        };
         const next = filter || {
-            start_date: $('#reg-start')?.value || '',
-            end_date: $('#reg-end')?.value || '',
+            start_date: typed('#reg-start', 'From', was.start_date),
+            end_date: typed('#reg-end', 'To', was.end_date),
             class_id: $('#reg-class')?.value || '',
         };
         if (reversedRangeRefused(next.start_date, next.end_date, { start: was.start_date, end: was.end_date })) {
@@ -664,20 +766,205 @@ const BankingPage = {
             if (endEl) endEl.value = was.end_date;
             return;
         }
+        // a date refused and nothing else changed: the register stays as it is
+        if (refused && ['start_date', 'end_date', 'class_id'].every(k => (next[k] || '') === (was[k] || ''))) return;
         BankingPage._regFilter = next;
+        BankingPage._regFilterId = id;
+        BankingPage._keepFrom(id, next.start_date);
         const url = BankingPage._regUrl(id);
         if ((location.hash || '#/') !== url) history.replaceState(history.state, '', url);
-        App.navigate(url);
+        return App.navigate(url);
     },
 
     regClear(id) {
         BankingPage.regFilterChanged(id, { start_date: '', end_date: '', class_id: '' });
     },
 
+    // Why a date box's date is not one to apply (#663), or '': a date half
+    // typed (a part left empty), or one in a year no books hold.
+    _dateRefused(box, word) {
+        if (!box) return '';
+        if (!box.value) return box.validity && box.validity.badInput ? `The ${word} date is not complete` : '';
+        return BankingPage._likelyDate(box.value) ? '' : `The ${word} date's year, ${box.value.slice(0, 4)}, is out of range: ${BankingPage._yearsSaid}`;
+    },
+
+    // The filter in use, as a refusal names what it kept (reversedRangeRefused).
+    _keptWords(f) {
+        return f.start_date && f.end_date ? `${formatDate(f.start_date)} to ${formatDate(f.end_date)}`
+            : f.start_date ? `from ${formatDate(f.start_date)}`
+                : f.end_date ? `to ${formatDate(f.end_date)}` : 'every date';
+    },
+
+    // A date box back on a date. Emptied, its type goes to text and back:
+    // WebKit left the parts of a half typed date in a box only emptied
+    // (settings.js clearClosingDate).
+    _putBack(box, date) {
+        if (!box) return;
+        if (date) { box.value = date; return; }
+        box.type = 'text';
+        box.value = '';
+        box.type = 'date';
+    },
+
+    // From and To apply as a text box's change does (#663): on Enter, or
+    // when the filter bar is left, not at each whole date a box makes while
+    // one is typed. Chromium and WebView2 fire change on the first
+    // keystroke that forms a date, and the register drawn again on it cut
+    // the typing short (11 typed into the month gave January, a day from 10
+    // up became 1 to 3, a year 0002) and kept that From for every later
+    // visit. A date picked from the calendar, or stepped with the date keys
+    // (+ - T M H Y R), applies at once, as the other date filters apply
+    // their change: nothing is being typed. Moving between From, To, the
+    // class and Clear is staying in the bar, so From and To typed one after
+    // the other apply together.
+    regFiltersKey(e, id) {
+        if (e.key === 'Tab') { BankingPage._tabbed = e.shiftKey ? 'back' : 'on'; return; }
+        BankingPage._tabbed = null;
+        const box = e.target;
+        if ((box.id !== 'reg-start' && box.id !== 'reg-end') || e.defaultPrevented) return;
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            BankingPage._applyDates(id, { focus: box.id });
+        } else if (BankingPage._editsDate(e)) {
+            box.dataset.typed = '1';
+        }
+    },
+
+    // A key that changes a date box's month, day or year as typed: a digit,
+    // Backspace or Delete, an arrow up or down; not Tab, Enter, the arrows
+    // across, nor a key held with Ctrl, Alt or Cmd.
+    _editsDate(e) {
+        if (e.ctrlKey || e.altKey || e.metaKey) return false;
+        return /^[0-9]$/.test(e.key) || ['Backspace', 'Delete', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'].includes(e.key);
+    },
+
+    // A press on a box: its calendar opening, or a click into a part of it.
+    // What is picked from the calendar applies at once.
+    regDatePointer(box) { delete box.dataset.typed; },
+
+    regDateChanged(box, id) {
+        if (box.dataset.typed) return;  // typed: on Enter, or when the bar is left
+        BankingPage._applyDates(id, { focus: document.activeElement === box ? box.id : null });
+    },
+
+    // The bar left. Not when the focus only moved within it, or the window
+    // lost it, or the page is going. Left by the keyboard, the register is
+    // drawn again and the keyboard goes on past the bar. Left by a click on
+    // a link or a button, the dates apply once that click is done, and not
+    // if it took the page elsewhere (Back, the sidebar): drawn then, the
+    // register could land over the page the click opened.
+    regFiltersLeft(e, id) {
+        const bar = e.currentTarget;
+        const to = e.relatedTarget;
+        const past = BankingPage._tabbed;
+        BankingPage._tabbed = null;
+        if ((to && bar.contains(to)) || bar.contains(document.activeElement)) return;
+        if (!document.contains(bar) || !BankingPage._onRegister(id) || !BankingPage._datesTyped()) return;
+        const keyboard = typeof App !== 'undefined' && typeof App.keyboardFocus === 'function' && App.keyboardFocus();
+        if (!keyboard && to && to.closest && to.closest('a[href], button')) BankingPage._applyAfterClick(id);
+        else BankingPage._applyDates(id, { focus: to && to.id ? to.id : null, past: keyboard ? past : null });
+    },
+
+    // Whether a date box holds what the register is not on: a date typed
+    // and not applied yet, or one half typed. Never on a bar a newer drawing
+    // of the register is replacing: that drawing has the filter already
+    // (Clear, a save), and Chromium's focusout as the old bar is taken away
+    // read its old dates as typed.
+    _datesTyped() {
+        const bar = document.getElementById('reg-filters');
+        if (!bar || bar.dataset.drawn !== String(BankingPage._drawing)) return false;
+        const f = BankingPage._regFilter;
+        return [['reg-start', 'start_date'], ['reg-end', 'end_date']].some(([el, k]) => {
+            const box = document.getElementById(el);
+            return !!box && (!!(box.validity && box.validity.badInput) || (box.value || '') !== (f[k] || ''));
+        });
+    },
+
+    _applyDates(id, { focus = null, past = null } = {}) {
+        ['reg-start', 'reg-end'].forEach(k => { const box = document.getElementById(k); if (box) delete box.dataset.typed; });
+        if (!BankingPage._datesTyped()) return;
+        const drawn = BankingPage.regFilterChanged(id);
+        if (drawn && (focus || past)) drawn.then(() => BankingPage._focusAfterDates(focus, past));
+    },
+
+    _applyAfterClick(id) {
+        if (BankingPage._afterClick) document.removeEventListener('click', BankingPage._afterClick, true);
+        const after = () => {
+            document.removeEventListener('click', after, true);
+            BankingPage._afterClick = null;
+            setTimeout(() => { if (BankingPage._onRegister(id)) BankingPage._applyDates(id); }, 0);
+        };
+        BankingPage._afterClick = after;
+        document.addEventListener('click', after, true);
+    },
+
+    // The keyboard where it was once the register is drawn again: in the
+    // box Enter was pressed in, on the control it moved to, or past the bar
+    // (the stop after it, or before it for Shift+Tab). Focus the redraw did
+    // not take (a box outside the page) is left where it is.
+    _focusAfterDates(focus, past) {
+        const active = document.activeElement;
+        if (active && active !== document.body && document.contains(active)) return;
+        let el = focus ? document.getElementById(focus) : null;
+        const page = document.getElementById('page-content');
+        const bar = document.getElementById('reg-filters');
+        if (!el && past && page && bar) {
+            const after = past === 'on';
+            const side = [...page.querySelectorAll(_TAB_SEL)]
+                .filter(s => !bar.contains(s) && !!(bar.compareDocumentPosition(s) & Node.DOCUMENT_POSITION_FOLLOWING) === after);
+            if (!after) side.reverse();
+            el = side.find(s => s.tabIndex >= 0 && !s.matches(':disabled') && _drawn(s)) || null;
+        }
+        if (el) focusFor(el, true);
+    },
+
+    // Back to the register after a change made on it (#663): on its own
+    // dates and class, which the bare address dropped, with the page where
+    // it was and, given an entry, that entry's row in view: scrolled to
+    // only when it is not, so a row on screen stays where it was.
+    async _backToRegister(accountId, { txnId = null, top = null } = {}) {
+        const box = document.getElementById('content');
+        const at = top === null ? (box ? box.scrollTop : 0) : top;
+        await BankingPage.go(BankingPage._regUrl(accountId));
+        const row = txnId ? document.querySelector(`#page-content tr[data-txn="${Number(txnId)}"]`) : null;
+        if (box) box.scrollTop = at;
+        if (row && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'nearest' });
+        return row;
+    },
+
+    // After + Entry, Edit or Transfer saves on the register: the dialog
+    // closes and the entry comes into view. One the dates leave out was
+    // said with the save's toast; one the class leaves out is said here.
+    async _showSaved(accountId, txnId, outside) {
+        const box = document.getElementById('content');
+        const top = box ? box.scrollTop : 0;
+        closeModal();
+        const row = await BankingPage._backToRegister(accountId, { txnId, top });
+        const cls = (BankingPage._ctx || {}).className;
+        if (!row && !outside && cls && BankingPage._regFilter.class_id && document.getElementById('reg-class')) {
+            toast(`This entry is not in ${T('class').toLowerCase()} ${cls}, so the register does not show it.`);
+        }
+    },
+
+    // Whether the page under any dialog open is this account's register.
+    _onRegister(id) {
+        return App.parseHash(location.hash).path === `/banking/${id}`;
+    },
+
+    _drawing: 0,  // each drawing of a register, its filter bar marked with it
+
     async renderRegister(accountId, query) {
         const id = parseInt(accountId, 10);
-        const f = BankingPage._regFilterFrom(query);
+        const drawing = ++BankingPage._drawing;
+        const q = query || {};
+        await BankingPage._openCompany();  // whose From is kept
+        const f = BankingPage._regFilterFrom(q);
+        // no dates in the address: the From date this register was last
+        // read from (#663); a From in the address is the one kept
+        if (!q.start_date && !q.end_date) f.start_date = BankingPage._lastFrom(id);
+        else if (f.start_date) BankingPage._keepFrom(id, f.start_date);
         BankingPage._regFilter = f;
+        BankingPage._regFilterId = id;
         // a date the address carried that was refused (not one, From after
         // To) is not kept on the bar: the address reads the dates in use, so
         // a reload does not toast again (NEW-35 review)
@@ -707,7 +994,10 @@ const BankingPage = {
         let review = [];
         // the whole queue: a year fetched from a feed can be more than a page
         if (feed) review = await fetchAllPages(`/banking/transactions?bank_account_id=${feed.bank_account_id}&status=unmatched`);
-        BankingPage._ctx = { accountId: id, accountName: reg.account_name, feedId: feed ? feed.bank_account_id : null, kind, lastReconciled: info.last_reconciled || null };
+        // the class chosen, for + Entry to take (#663): one archived is not
+        // in the form's list, so a new entry is not given it
+        const chosen = f.class_id ? classes.find(c => String(c.id) === f.class_id) || null : null;
+        BankingPage._ctx = { accountId: id, accountName: reg.account_name, feedId: feed ? feed.bank_account_id : null, kind, lastReconciled: info.last_reconciled || null, className: reg.class_name || '', classId: chosen && !chosen.is_archived ? chosen.id : null };
 
         let html = `
             <div class="page-header">
@@ -735,12 +1025,16 @@ const BankingPage = {
 
         const classOpts = classes.map(c => `<option value="${c.id}"${String(c.id) === f.class_id ? ' selected' : ''}>${escapeHtml(c.name)}${c.is_archived ? ' (archived)' : ''}</option>`).join('');
         const filtered = !!(f.start_date || f.end_date || f.class_id);
+        // From and To apply on Enter or once the bar is left, a pick from the
+        // calendar at once (#663: regFiltersKey)
+        const dateBox = `onpointerdown="BankingPage.regDatePointer(this)" onchange="BankingPage.regDateChanged(this, ${id})"`;
         html += `
-            <div class="toolbar" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <div class="toolbar" id="reg-filters" data-drawn="${drawing}" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;"
+                onkeydown="BankingPage.regFiltersKey(event, ${id})" onfocusout="BankingPage.regFiltersLeft(event, ${id})">
                 <label for="reg-start" style="font-size:11px;">From</label>
-                <input type="date" id="reg-start" value="${escapeHtml(f.start_date)}" onchange="BankingPage.regFilterChanged(${id})">
+                <input type="date" id="reg-start" value="${escapeHtml(f.start_date)}" ${dateBox}>
                 <label for="reg-end" style="font-size:11px;">To</label>
-                <input type="date" id="reg-end" value="${escapeHtml(f.end_date)}" onchange="BankingPage.regFilterChanged(${id})">
+                <input type="date" id="reg-end" value="${escapeHtml(f.end_date)}" ${dateBox}>
                 <label for="reg-class" style="font-size:11px;">${T('Class')}</label>
                 <select id="reg-class" data-no-search onchange="BankingPage.regFilterChanged(${id})"><option value="">All ${T('classes').toLowerCase()}</option>${classOpts}</select>
                 ${filtered ? `<button type="button" class="btn btn-sm btn-secondary" onclick="BankingPage.regClear(${id})">Clear</button>` : ''}
@@ -751,17 +1045,22 @@ const BankingPage = {
         // payee, memo, category, ref, payment or deposit; Enter or Post
         // posts it through the same call as + Entry, and the next row is
         // ready. The list reads oldest to newest, as a ledger does, with the
-        // running balance down the right.
-        const quickRow = BankingPage._quickEntryRow(id, kind, chart, outLabel, inLabel);
+        // running balance down the right. A date filter keeps the row (#663:
+        // a register worked from the start of the month never showed it). A
+        // class filter puts a line in its place: the row has no class box, so
+        // its entry would post with none and leave the list, and the running
+        // balance above it counts that class's lines only.
+        const quickRow = f.class_id ? BankingPage._entryRowOff(!!(chosen && chosen.is_system_default))
+            : BankingPage._quickEntryRow(id, kind, chart, outLabel, inLabel);
         if (!reg.entries.length) {
             html += `<div class="empty-state"><p>${filtered ? 'Nothing posted to this account for these filters' : 'Nothing posted to this account yet'}</p></div>`;
-            if (!filtered) html += `<div class="table-container"><table><thead><tr>
+            html += `<div class="table-container"><table><thead><tr>
                     <th scope="col">Date</th><th scope="col">Payee</th><th scope="col">Memo</th><th scope="col">Ref</th><th scope="col">Category</th>
                     <th scope="col" class="amount">${outLabel}</th><th scope="col" class="amount">${inLabel}</th><th scope="col" class="amount">Balance</th><th scope="col"></th><th scope="col"></th>
                 </tr></thead><tbody></tbody>${quickRow}</table></div>`;
         } else {
             const rows = reg.entries.slice().map(e => `
-                <tr style="${e.voided ? 'color:var(--gray-400); text-decoration:line-through;' : ''}">
+                <tr data-txn="${e.transaction_id}" style="${e.voided ? 'color:var(--gray-400); text-decoration:line-through;' : ''}">
                     <td>${formatDate(e.date)}</td>
                     <td>${escapeHtml(e.payee || '')}</td>
                     <td>${BankingPage._memoCell(e)}</td>
@@ -776,14 +1075,14 @@ const BankingPage = {
             // oldest first, so the balance brought forward (a start date's
             // doing) opens the table (2.23.5 round 2, NEW-142); the entry
             // row follows the entries on a populated register as on an
-            // empty one (W-14, NEW-140), unless the register is filtered
+            // empty one (W-14, NEW-140)
             const opening = f.start_date ? `<tr style="color:var(--gray-500);" id="reg-opening"><td>${formatDate(f.start_date)}</td><td colspan="6">Balance brought forward${reg.class_name ? ` (${escapeHtml(reg.class_name)})` : ''}</td><td class="amount">${formatCurrency(reg.opening_balance)}</td><td></td><td></td></tr>` : '';
             html += `<div class="table-container"><table>
                 <thead><tr>
                     <th scope="col">Date</th><th scope="col">Payee</th><th scope="col">Memo</th><th scope="col">Ref #</th><th scope="col">Type</th>
                     <th scope="col" class="amount">${outLabel}</th><th scope="col" class="amount">${inLabel}</th><th scope="col" class="amount">Balance</th>
                     <th scope="col" title="✓ cleared · R reconciled">✓</th><th scope="col"></th>
-                </tr></thead><tbody>${opening}${rows}</tbody>${filtered ? '' : quickRow}</table></div>`;
+                </tr></thead><tbody>${opening}${rows}</tbody>${quickRow}</table></div>`;
         }
         return html;
     },
@@ -893,8 +1192,10 @@ const BankingPage = {
         if (sel && sel.value) body.category_account_id = parseInt(sel.value, 10);
         try {
             const added = await API.post(`/banking/transactions/${lineId}/add`, body);
-            toast(added.vendor_name ? `Added to the books for ${added.vendor_name}` : 'Added to the books');
-            BankingPage.go(`#/banking/${accountId}`);
+            const said = added.vendor_name ? `Added to the books for ${added.vendor_name}` : 'Added to the books';
+            const outside = BankingPage._outsideFilter(BankingPage._lineDate(added, lineId));
+            toast(outside ? `${said}. ${outside}` : said);
+            BankingPage._backToRegister(accountId);
             BankingPage._offerFeedVendors([added]);
         } catch (err) { toast(err.message, 'error'); }
     },
@@ -959,12 +1260,13 @@ const BankingPage = {
         try {
             // The server builds the split from the gross, so the clearing and
             // fee account ids never touch the client.
-            await API.post(`/banking/transactions/${lineId}/payout`, {
+            const paid = await API.post(`/banking/transactions/${lineId}/payout`, {
                 provider: sp.provider, gross: gross.toFixed(2),
             });
             closeModal();
-            toast('Payout recorded');
-            BankingPage.go(`#/banking/${accountId}`);
+            const outside = BankingPage._outsideFilter(BankingPage._lineDate(paid, lineId));
+            toast(outside ? `Payout recorded. ${outside}` : 'Payout recorded');
+            BankingPage._backToRegister(accountId);
         } catch (err) { toast(err.message, 'error'); }
     },
 
@@ -1004,21 +1306,21 @@ const BankingPage = {
     async excludeLine(lineId, accountId) {
         try {
             await API.post(`/banking/transactions/${lineId}/exclude`);
-            BankingPage.go(`#/banking/${accountId}`);
+            BankingPage._backToRegister(accountId);
         } catch (err) { toast(err.message, 'error'); }
     },
 
     async restoreLine(lineId, accountId) {
         try {
             await API.post(`/banking/transactions/${lineId}/restore`);
-            BankingPage.go(`#/banking/${accountId}`);
+            BankingPage._backToRegister(accountId);
         } catch (err) { toast(err.message, 'error'); }
     },
 
     async unmatchLine(lineId, accountId) {
         try {
             await API.post(`/banking/transactions/${lineId}/unmatch`);
-            BankingPage.go(`#/banking/${accountId}`);
+            BankingPage._backToRegister(accountId);
         } catch (err) { toast(err.message, 'error'); }
     },
 
@@ -1067,9 +1369,17 @@ const BankingPage = {
             // A pick made a moment ago may still be on its way.
             await Promise.allSettled([...BankingPage._pendingCategories]);
             const lines = BankingPage._reviewLines || {};
+            // the lines it posts: each with a category, as the server takes them
+            const categorised = Object.values(lines).filter(t => {
+                const sel = document.getElementById(`cat-${t.id}`);
+                return sel ? !!sel.dataset.current : !!t.category_account_id;
+            });
             const r = await API.post(`/banking/accounts/${feedId}/feed/add-all`);
-            toast(`Added ${r.added}${r.skipped.length ? `, skipped ${r.skipped.length}: ${r.skipped[0].reason}` : ''}`);
-            BankingPage.go(`#/banking/${accountId}`);
+            const skipped = new Set(r.skipped.map(x => x.id));
+            const outside = BankingPage._outsideFilterAll(categorised.filter(t => !skipped.has(t.id)).map(t => String(t.date || '')));
+            const said = `Added ${r.added}${r.skipped.length ? `, skipped ${r.skipped.length}: ${r.skipped[0].reason}` : ''}`;
+            toast(outside ? `${said}. ${outside}` : said);
+            BankingPage._backToRegister(accountId);
             BankingPage._offerFeedVendors((r.without_vendor || []).map(id => lines[id]).filter(Boolean));
         } catch (err) { toast(err.message, 'error'); }
     },
@@ -1078,13 +1388,15 @@ const BankingPage = {
         try {
             const r = await API.post(`/banking/accounts/${feedId}/feed/auto-match`);
             toast(`Matched ${r.matched} statement line${r.matched === 1 ? '' : 's'}`);
-            BankingPage.go(`#/banking/${accountId}`);
+            BankingPage._backToRegister(accountId);
         } catch (err) { toast(err.message, 'error'); }
     },
 
     async showMatch(lineId, accountId) {
         try {
             const cands = await API.get(`/banking/transactions/${lineId}/candidates`);
+            // each posting's date, for Matched to say one the dates leave out
+            BankingPage._matchDates = Object.fromEntries(cands.map(c => [c.line_id, c.date]));
             const rows = cands.map(c => `<tr>
                 <td>${formatDate(c.date)} <span style="font-size:10px; color:var(--gray-400);">${c.days_off ? c.days_off + 'd off' : 'same day'}</span></td>
                 <td>${escapeHtml(c.payee || c.description || '')}</td>
@@ -1101,9 +1413,10 @@ const BankingPage = {
     async matchLine(lineId, ledgerLineId, accountId) {
         try {
             await API.post(`/banking/transactions/${lineId}/match`, { line_id: ledgerLineId });
-            toast('Matched');
+            const outside = BankingPage._outsideFilter(String((BankingPage._matchDates || {})[ledgerLineId] || ''));
+            toast(outside ? `Matched. ${outside}` : 'Matched');
             closeModal();
-            BankingPage.go(`#/banking/${accountId}`);
+            BankingPage._backToRegister(accountId);
         } catch (err) { toast(err.message, 'error'); }
     },
 
@@ -1115,7 +1428,7 @@ const BankingPage = {
         try {
             await API.post(path);
             toast('Voided');
-            BankingPage.go(`#/banking/${accountId}`);
+            BankingPage._backToRegister(accountId);
         } catch (err) { toast(err.message, 'error'); }
     },
 
@@ -1144,6 +1457,17 @@ const BankingPage = {
                 <tr data-write><td colspan="10" id="qe-category-host" style="padding:0; border:0;"></td></tr></tfoot>`;
     },
 
+    // In the entry row's place while a class is chosen (#663). The
+    // company's default class (Uncategorized) counts every line with no
+    // class, the row's entry among them, so there the balance is the
+    // reason alone.
+    _entryRowOff(isDefault = false) {
+        const cls = T('class').toLowerCase();
+        const why = isDefault ? `the running balance counts this ${cls} only`
+            : `it has no ${cls} box, and the running balance counts this ${cls} only`;
+        return `<tfoot><tr id="reg-quick-entry-off" data-write><td colspan="10" style="padding:6px 10px; font-size:11px; color:var(--gray-500);">The entry row is hidden while a ${cls} is chosen: ${why}. Choose All ${T('classes').toLowerCase()} to use it, or post with + Entry.</td></tr></tfoot>`;
+    },
+
     // Enter in the quick row. As before, it posts the entry, unless the
     // preference "Enter moves between fields" is on (#480): then it moves
     // to the row's next field, and only Enter in the last amount (or Post)
@@ -1164,10 +1488,42 @@ const BankingPage = {
     // reloads the page. One register's date is not another's.
     _lastDate: {},
 
+    // An entry dated outside the register's From and To would leave the
+    // list without a word when it is drawn again: the toast says so (#663).
+    _outsideFilter(date) {
+        const f = BankingPage._regFilter;
+        if (date && f.start_date && date < f.start_date) return `Its date, ${formatDate(date)}, is before the From date, so the register does not show it.`;
+        if (date && f.end_date && date > f.end_date) return `Its date, ${formatDate(date)}, is after the To date, so the register does not show it.`;
+        return '';
+    },
+
+    // Several entries posted at once (Add all categorised): those the
+    // register's dates leave out, said as _outsideFilter says one.
+    _outsideFilterAll(dates) {
+        if (dates.length === 1) return BankingPage._outsideFilter(dates[0]);
+        const f = BankingPage._regFilter;
+        const before = (d) => !!(d && f.start_date && d < f.start_date);
+        const after = (d) => !!(d && f.end_date && d > f.end_date);
+        const out = dates.filter(d => before(d) || after(d));
+        if (!out.length) return '';
+        const side = out.some(before) && out.some(after) ? 'before the From date or after the To date'
+            : out.some(before) ? 'before the From date' : 'after the To date';
+        return out.length === 1
+            ? `One of them, dated ${formatDate(out[0])}, is ${side}, so the register does not show it.`
+            : `${out.length} of them are dated ${side}, so the register does not show them.`;
+    },
+
+    // The date a statement line posted on: the answer's, else the queue's.
+    _lineDate(answer, lineId) {
+        const line = (BankingPage._reviewLines || {})[lineId] || {};
+        return String((answer && answer.date) || line.date || '');
+    },
+
     // The quick row posts through the same call as + Entry (#329): money
     // out from the left amount box, money in from the right one (a card's
     // charge and payment the same way), one of them; then the register
-    // redraws with the entry in place and the row ready for the next.
+    // redraws on its filter (#663) with the entry in place and the row
+    // ready for the next.
     async postQuickEntry(accountId) {
         const v = (sel) => (document.getElementById(sel) || {}).value || '';
         const out = parseFloat(v('qe-out') || '0'), inn = parseFloat(v('qe-in') || '0');
@@ -1195,9 +1551,10 @@ const BankingPage = {
                 document.getElementById('qe-ref'));
             if (!posted) return;
             BankingPage._lastDate[accountId] = data.date;
-            toastPosted('Entry posted');
+            const outside = BankingPage._outsideFilter(data.date);
+            toastPosted(outside ? `Entry posted. ${outside}` : 'Entry posted');
             BankingPage.payeeTyped(data.payee, inn > 0, 'qe-payee');
-            await BankingPage.go(`#/banking/${accountId}`);
+            await BankingPage.go(BankingPage._regUrl(accountId));
             BankingPage._focusPayee();
         } catch (err) { toast(err.message, 'error'); }
     },
@@ -1244,7 +1601,13 @@ const BankingPage = {
             BankingPage._customerNames = new Set(customers.map(c => c.name.toLowerCase()));
         }
         await Nonprofit.loadFunds();
-        const classGroup = await classFormGroupHtml();
+        // a new entry on a register shown for one class takes that class
+        // (#663), so one posted as the class line suggests stays in the
+        // list; an edit keeps its own
+        const ctx = BankingPage._ctx || {};
+        const shownFor = !entry && ctx.accountId === accountId && String(BankingPage._regFilterId) === String(accountId)
+            && BankingPage._regFilter.class_id ? ctx.classId : null;
+        const classGroup = await classFormGroupHtml(shownFor || undefined);
         // a new entry opens on the register's last posted date (#566); an
         // edit fills in its own
         const carried = (!entry && BankingPage._lastDate[accountId]) || '';
@@ -1686,10 +2049,10 @@ const BankingPage = {
                 form.check_number || null);
             if (!posted) return;
             BankingPage._lastDate[accountId] = data.date;
-            toastPosted('Entry posted');
+            const outside = BankingPage._outsideFilter(data.date);
+            toastPosted(outside ? `Entry posted. ${outside}` : 'Entry posted');
             BankingPage.payeeTyped(data.payee, parseFloat(data.amount) > 0, 'qe-payee');
-            closeModal();
-            BankingPage.go(`#/banking/${accountId}`);
+            await BankingPage._showSaved(accountId, posted.id, outside);
         } catch (err) { toast(err.message, 'error'); }
     },
 
@@ -1706,9 +2069,10 @@ const BankingPage = {
                 q => API.put(`/banking/entries/${entryId}`, data, q ? { query: q } : undefined),
                 (form && form.check_number) || null);
             if (!saved) return;
-            toastPosted(saved.note ? `Entry saved. ${saved.note}` : 'Entry saved');
-            closeModal();
-            BankingPage.go(`#/banking/${accountId}`);
+            const outside = BankingPage._outsideFilter(data.date);
+            const said = [saved.note, outside].filter(Boolean).join(' ');
+            toastPosted(said ? `Entry saved. ${said}` : 'Entry saved');
+            await BankingPage._showSaved(accountId, entryId, outside);
         } catch (err) {
             if (err.status === 409 && err.detail && err.detail.code === 'reconciled' && !data.confirm_reconciled) {
                 BankingPage._askReconciled(entryId, accountId, err.detail.message);
@@ -1950,7 +2314,10 @@ const BankingPage = {
                 memo: form.memo.value || null,
                 reference: form.reference.value || null,
             });
-            toastPosted('Transfer posted');
+            const here = BankingPage._onRegister(t.from_account_id);
+            const outside = here ? BankingPage._outsideFilter(form.date.value) : '';
+            toastPosted(outside ? `Transfer posted. ${outside}` : 'Transfer posted');
+            if (here) { await BankingPage._showSaved(t.from_account_id, t.id, outside); return; }
             closeModal();
             BankingPage.go(`#/banking/${t.from_account_id}`);
         } catch (err) { toast(err.message, 'error'); }
@@ -2099,7 +2466,7 @@ const BankingPage = {
             <div class="page-header">
                 <h2>Reconcile — statement of ${formatDate(data.statement_date)}</h2>
                 <div class="btn-group">
-                    <button class="btn btn-secondary" onclick="BankingPage.go('#/banking/${data.account_id}')">Later</button>
+                    <button class="btn btn-secondary" onclick="BankingPage.go(BankingPage._regUrl(${data.account_id}))">Later</button>
                     <button class="btn btn-secondary" onclick="BankingPage.abandonReconcile(${reconId}, ${data.account_id})">Abandon</button>
                     <button class="btn btn-primary" id="recon-finish-btn" onclick="BankingPage.finishReconcile(${reconId}, ${data.account_id})">Finish Reconciliation</button>
                 </div>
@@ -2220,7 +2587,7 @@ const BankingPage = {
             if (!confirm('Mark this reconciliation as complete? Cleared lines are locked.')) return;
             await API.post(`/banking/reconciliations/${reconId}/complete`);
             toast('Reconciliation completed');
-            BankingPage.go(`#/banking/${accountId}`);
+            BankingPage.go(BankingPage._regUrl(accountId));
             BankingPage.showReconReport(reconId);
         } catch (err) {
             if (msg) msg.textContent = err.message;
@@ -2298,7 +2665,7 @@ const BankingPage = {
         if (!confirm('Abandon this reconciliation? Ticks are kept.')) return;
         try {
             await API.del(`/banking/reconciliations/${reconId}`);
-            BankingPage.go(`#/banking/${accountId}`);
+            BankingPage.go(BankingPage._regUrl(accountId));
         } catch (err) { toast(err.message, 'error'); }
     },
 
@@ -2482,7 +2849,7 @@ const BankingPage = {
             const data = await resp.json();
             toast(`Imported ${data.imported} (${data.skipped} duplicates skipped, ${data.matched || 0} matched to the books)`);
             closeModal();
-            BankingPage.go(`#/banking/${accountId}`);
+            BankingPage._backToRegister(accountId);
         } catch (err) {
             toast(err.message, 'error');
         } finally {
