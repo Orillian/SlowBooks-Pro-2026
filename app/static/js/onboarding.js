@@ -72,8 +72,9 @@ const OnboardingPage = {
             return;
         }
 
-        // Seed default tasks if none exist yet
-        if (!cl.tasks || cl.tasks.length === 0) {
+        // Save the default checklist the first time it is opened: until then
+        // the API answers it unsaved, its tasks without ids (#662)
+        if (!cl.tasks || cl.tasks.length === 0 || cl.tasks.some(t => t.id == null)) {
             try {
                 cl = await API.post(`/onboarding/${empId}/seed`, {});
             } catch {

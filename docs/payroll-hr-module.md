@@ -41,7 +41,7 @@ All 50 states + DC: dedicated engines for WA / CA / NY / OR, a table-driven engi
 
 | Method + Path | Handler | Purpose |
 |---------------|---------|---------|
-| `GET /api/onboarding/{emp_id}` | `onboarding.get_checklist` | Fetch checklist (seeds if absent) |
+| `GET /api/onboarding/{emp_id}` | `onboarding.get_checklist` | Fetch checklist (the default, unsaved and without task ids, until it is seeded) |
 | `POST /api/onboarding/{emp_id}/seed` | `onboarding.seed_checklist` | Reset / re-seed standard tasks |
 | `PUT /api/onboarding/tasks/{task_id}` | `onboarding.update_task` | Mark signed / complete |
 | `POST /api/onboarding/tasks/{task_id}/complete` | `onboarding.complete_task` | Convenience for the SPA checkbox |
