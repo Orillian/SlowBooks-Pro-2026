@@ -10,7 +10,9 @@
 # A check number is digits alone ("5001"): "ACH", "DEBIT", "EFT" and an
 # expense's "rcpt 1187" repeat or name a receipt, and are not checks.
 # Only money out of the account counts (a deposit's slip number is not a
-# check), and a void, or the reversal that voided it, frees its number.
+# check), and a void, or the reversal that voided it, frees its number. A
+# QuickBooks Desktop ledger import's entry counts when QuickBooks' Type is a
+# check's (#663): the Num of a journal entry or an EFT is not a check number.
 # ============================================================================
 
 from decimal import Decimal
@@ -32,6 +34,37 @@ CODE = "duplicate_check_number"
 def _number(text) -> str:
     n = (text or "").strip()
     return n if n.isdigit() else ""
+
+
+# QuickBooks' types that write a check, US and Canadian spellings
+CHECK_TYPES = frozenset(
+    t.lower()
+    for t in (
+        "Check",
+        "Cheque",
+        "Bill Pmt -Check",
+        "Bill Pmt -Cheque",
+        "Paycheck",
+        "Paycheque",
+        "Liability Check",
+        "Liability Cheque",
+        "Sales Tax Payment",
+    )
+)
+
+
+def _is_check(txn) -> bool:
+    """Whether a posting's number is a check's: always, but for a
+    QuickBooks Desktop ledger import's entry, whose Type must be a check's.
+    An entry with no Type stored is read by its key, which starts with it."""
+    from app.services.entry_text import QB_LEDGER_SOURCE
+
+    if txn.source_type != QB_LEDGER_SOURCE:
+        return True
+    if txn.source_kind:
+        return txn.source_kind.strip().lower() in CHECK_TYPES
+    key = (txn.source_ref or txn.reference or "").lower()
+    return any(key.startswith(t + " ") for t in CHECK_TYPES)
 
 
 def warning_on(db: Session) -> bool:
@@ -68,7 +101,9 @@ def uses_of(
     txns = {
         t.id: (t, ln.credit)
         for t, ln in rows
-        if t.id != exclude_txn_id and not (t.source_type or "").endswith("_void")
+        if t.id != exclude_txn_id
+        and not (t.source_type or "").endswith("_void")
+        and _is_check(t)
     }
     # a bill payment keeps its number on the payment, not the posting
     try:
