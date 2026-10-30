@@ -642,21 +642,43 @@ const BankingPage = {
     _lastFrom(id) {
         try {
             const v = localStorage.getItem(BankingPage._fromKey(id)) || '';
-            return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : '';
+            return BankingPage._likelyDate(v) ? v : '';
         } catch (e) { return ''; }
     },
+    // A From with a year no books hold is not kept (a year typed a digit
+    // at a time); the one kept before it stays.
     _keepFrom(id, date) {
         try {
-            if (date) localStorage.setItem(BankingPage._fromKey(id), date);
-            else localStorage.removeItem(BankingPage._fromKey(id));
+            if (!date) localStorage.removeItem(BankingPage._fromKey(id));
+            else if (BankingPage._likelyDate(date)) localStorage.setItem(BankingPage._fromKey(id), date);
         } catch (e) { /* not kept: the next visit opens on every date */ }
     },
+
+    // A date the register takes from its boxes, its address or the From it
+    // keeps (#663): a real date in a year the books can hold, 1900 to 2199
+    // (the years a request may carry, app/schemas/common.py). A year typed
+    // a digit at a time reads 0002, 0020 and 0202 before it is 2026.
+    _likelyDate(v) {
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v || ''));
+        if (!m || +m[1] < 1900 || +m[1] > 2199) return false;
+        const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+        return d.getUTCMonth() === +m[2] - 1 && d.getUTCDate() === +m[3];
+    },
+    _yearsSaid: 'the year must be between 1900 and 2199',
 
     _regFilterFrom(query) {
         const q = query || {};
         // a date that is not one, or From after To, is said so and ignored
+        const dates = datesFromQuery(q);
+        // and one in a year no books hold (#663)
+        for (const key of ['start_date', 'end_date']) {
+            if (dates[key] && !BankingPage._likelyDate(dates[key])) {
+                toast(`${key} in the address is out of range (${dates[key]}): ${BankingPage._yearsSaid} — ignored`, 'error');
+                dates[key] = '';
+            }
+        }
         return {
-            ...datesFromQuery(q),
+            ...dates,
             class_id: /^\d+$/.test(q.class_id || '') ? q.class_id : '',
         };
     },
@@ -676,9 +698,18 @@ const BankingPage = {
     // register, and its address, stay on that filter.
     regFilterChanged(id, filter = null) {
         const was = BankingPage._regFilter;
+        let refused = false;
+        const typed = (sel, word, kept) => {
+            const why = BankingPage._dateRefused($(sel), word);
+            if (!why) return $(sel)?.value || '';
+            refused = true;
+            toast(`${why} — kept ${BankingPage._keptWords(was)}`, 'error');
+            BankingPage._putBack($(sel), kept);
+            return kept || '';
+        };
         const next = filter || {
-            start_date: $('#reg-start')?.value || '',
-            end_date: $('#reg-end')?.value || '',
+            start_date: typed('#reg-start', 'From', was.start_date),
+            end_date: typed('#reg-end', 'To', was.end_date),
             class_id: $('#reg-class')?.value || '',
         };
         if (reversedRangeRefused(next.start_date, next.end_date, { start: was.start_date, end: was.end_date })) {
@@ -688,6 +719,8 @@ const BankingPage = {
             if (endEl) endEl.value = was.end_date;
             return;
         }
+        // a date refused and nothing else changed: the register stays as it is
+        if (refused && ['start_date', 'end_date', 'class_id'].every(k => (next[k] || '') === (was[k] || ''))) return;
         BankingPage._regFilter = next;
         BankingPage._regFilterId = id;
         BankingPage._keepFrom(id, next.start_date);
@@ -698,6 +731,32 @@ const BankingPage = {
 
     regClear(id) {
         BankingPage.regFilterChanged(id, { start_date: '', end_date: '', class_id: '' });
+    },
+
+    // Why a date box's date is not one to apply (#663), or '': a date half
+    // typed (a part left empty), or one in a year no books hold.
+    _dateRefused(box, word) {
+        if (!box) return '';
+        if (!box.value) return box.validity && box.validity.badInput ? `The ${word} date is not complete` : '';
+        return BankingPage._likelyDate(box.value) ? '' : `The ${word} date's year, ${box.value.slice(0, 4)}, is out of range: ${BankingPage._yearsSaid}`;
+    },
+
+    // The filter in use, as a refusal names what it kept (reversedRangeRefused).
+    _keptWords(f) {
+        return f.start_date && f.end_date ? `${formatDate(f.start_date)} to ${formatDate(f.end_date)}`
+            : f.start_date ? `from ${formatDate(f.start_date)}`
+                : f.end_date ? `to ${formatDate(f.end_date)}` : 'every date';
+    },
+
+    // A date box back on a date. Emptied, its type goes to text and back:
+    // WebKit left the parts of a half typed date in a box only emptied
+    // (settings.js clearClosingDate).
+    _putBack(box, date) {
+        if (!box) return;
+        if (date) { box.value = date; return; }
+        box.type = 'text';
+        box.value = '';
+        box.type = 'date';
     },
 
     // From and To apply as a text box's change does (#663): on Enter, or

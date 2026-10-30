@@ -850,3 +850,68 @@ def test_a_click_that_leaves_the_register_is_not_raced_by_the_dates(browser):
         assert page.evaluate(KEPT, 1) == "2026-10-01"
     finally:
         page.close()
+
+
+def test_a_date_with_a_year_no_books_hold_is_neither_applied_nor_kept(browser):
+    """A year typed a digit at a time reads 0002, 0020, 0202 on its way to
+    2026 (#663). Entered like that, or half typed, it is said so and the
+    box goes back to the date in use; one in the address is ignored and
+    said so; one kept is not used. None of them is kept."""
+    page = _register_page(browser, [], "#/banking/1?start_date=2026-09-01")
+    try:
+        page.focus("#reg-start")
+        _type(page, "10012")  # Oct 1, year 0002
+        assert page.input_value("#reg-start") == "0002-10-01"
+        page.keyboard.press("Enter")
+        _toast_with(
+            page,
+            "The From date's year, 0002, is out of range: the year must be"
+            " between 1900 and 2199 — kept from Sep 1, 2026",
+        )
+        assert page.input_value("#reg-start") == "2026-09-01"
+        assert (
+            page.evaluate("() => location.hash") == "#/banking/1?start_date=2026-09-01"
+        )
+        assert page.evaluate(KEPT, 1) == "2026-09-01"
+
+        # half typed: the month emptied
+        page.evaluate("() => document.activeElement.blur()")
+        page.focus("#reg-start")
+        page.keyboard.press("Backspace")
+        assert page.evaluate(
+            "() => document.getElementById('reg-start').validity.badInput"
+        )
+        page.keyboard.press("Enter")
+        _toast_with(page, "The From date is not complete — kept from Sep 1, 2026")
+        assert page.input_value("#reg-start") == "2026-09-01"
+        assert page.evaluate(KEPT, 1) == "2026-09-01"
+
+        # To the same way, and the bar left (not Enter)
+        page.focus("#reg-end")
+        _type(page, "123120")  # Dec 31, year 0020
+        page.click("#page-content h2")
+        _toast_with(page, "The To date's year, 0020, is out of range")
+        assert page.input_value("#reg-end") == ""
+        assert (
+            page.evaluate("() => location.hash") == "#/banking/1?start_date=2026-09-01"
+        )
+
+        # in the address: said, ignored, not kept
+        _visit(page, "#/banking/1?start_date=0002-10-01", "#reg-start[value='']")
+        _toast_with(
+            page,
+            "start_date in the address is out of range (0002-10-01): the year"
+            " must be between 1900 and 2199 — ignored",
+        )
+        page.wait_for_function("() => location.hash === '#/banking/1'")
+        assert page.evaluate(KEPT, 1) == "2026-09-01"
+
+        # kept by an earlier build: not used
+        page.evaluate(
+            "() => localStorage.setItem(BankingPage._fromKey(1), '0202-10-01')"
+        )
+        _open_register(page, 4, "")
+        _open_register(page, 1, "")
+        assert page.evaluate("() => location.hash") == "#/banking/1"
+    finally:
+        page.close()
