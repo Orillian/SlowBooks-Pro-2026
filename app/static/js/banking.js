@@ -1185,7 +1185,9 @@ const BankingPage = {
         if (sel && sel.value) body.category_account_id = parseInt(sel.value, 10);
         try {
             const added = await API.post(`/banking/transactions/${lineId}/add`, body);
-            toast(added.vendor_name ? `Added to the books for ${added.vendor_name}` : 'Added to the books');
+            const said = added.vendor_name ? `Added to the books for ${added.vendor_name}` : 'Added to the books';
+            const outside = BankingPage._outsideFilter(BankingPage._lineDate(added, lineId));
+            toast(outside ? `${said}. ${outside}` : said);
             BankingPage._backToRegister(accountId);
             BankingPage._offerFeedVendors([added]);
         } catch (err) { toast(err.message, 'error'); }
@@ -1251,11 +1253,12 @@ const BankingPage = {
         try {
             // The server builds the split from the gross, so the clearing and
             // fee account ids never touch the client.
-            await API.post(`/banking/transactions/${lineId}/payout`, {
+            const paid = await API.post(`/banking/transactions/${lineId}/payout`, {
                 provider: sp.provider, gross: gross.toFixed(2),
             });
             closeModal();
-            toast('Payout recorded');
+            const outside = BankingPage._outsideFilter(BankingPage._lineDate(paid, lineId));
+            toast(outside ? `Payout recorded. ${outside}` : 'Payout recorded');
             BankingPage._backToRegister(accountId);
         } catch (err) { toast(err.message, 'error'); }
     },
@@ -1359,8 +1362,16 @@ const BankingPage = {
             // A pick made a moment ago may still be on its way.
             await Promise.allSettled([...BankingPage._pendingCategories]);
             const lines = BankingPage._reviewLines || {};
+            // the lines it posts: each with a category, as the server takes them
+            const categorised = Object.values(lines).filter(t => {
+                const sel = document.getElementById(`cat-${t.id}`);
+                return sel ? !!sel.dataset.current : !!t.category_account_id;
+            });
             const r = await API.post(`/banking/accounts/${feedId}/feed/add-all`);
-            toast(`Added ${r.added}${r.skipped.length ? `, skipped ${r.skipped.length}: ${r.skipped[0].reason}` : ''}`);
+            const skipped = new Set(r.skipped.map(x => x.id));
+            const outside = BankingPage._outsideFilterAll(categorised.filter(t => !skipped.has(t.id)).map(t => String(t.date || '')));
+            const said = `Added ${r.added}${r.skipped.length ? `, skipped ${r.skipped.length}: ${r.skipped[0].reason}` : ''}`;
+            toast(outside ? `${said}. ${outside}` : said);
             BankingPage._backToRegister(accountId);
             BankingPage._offerFeedVendors((r.without_vendor || []).map(id => lines[id]).filter(Boolean));
         } catch (err) { toast(err.message, 'error'); }
@@ -1377,6 +1388,8 @@ const BankingPage = {
     async showMatch(lineId, accountId) {
         try {
             const cands = await API.get(`/banking/transactions/${lineId}/candidates`);
+            // each posting's date, for Matched to say one the dates leave out
+            BankingPage._matchDates = Object.fromEntries(cands.map(c => [c.line_id, c.date]));
             const rows = cands.map(c => `<tr>
                 <td>${formatDate(c.date)} <span style="font-size:10px; color:var(--gray-400);">${c.days_off ? c.days_off + 'd off' : 'same day'}</span></td>
                 <td>${escapeHtml(c.payee || c.description || '')}</td>
@@ -1393,7 +1406,8 @@ const BankingPage = {
     async matchLine(lineId, ledgerLineId, accountId) {
         try {
             await API.post(`/banking/transactions/${lineId}/match`, { line_id: ledgerLineId });
-            toast('Matched');
+            const outside = BankingPage._outsideFilter(String((BankingPage._matchDates || {})[ledgerLineId] || ''));
+            toast(outside ? `Matched. ${outside}` : 'Matched');
             closeModal();
             BankingPage._backToRegister(accountId);
         } catch (err) { toast(err.message, 'error'); }
@@ -1469,6 +1483,28 @@ const BankingPage = {
         if (date && f.start_date && date < f.start_date) return `Its date, ${formatDate(date)}, is before the From date, so the register does not show it.`;
         if (date && f.end_date && date > f.end_date) return `Its date, ${formatDate(date)}, is after the To date, so the register does not show it.`;
         return '';
+    },
+
+    // Several entries posted at once (Add all categorised): those the
+    // register's dates leave out, said as _outsideFilter says one.
+    _outsideFilterAll(dates) {
+        if (dates.length === 1) return BankingPage._outsideFilter(dates[0]);
+        const f = BankingPage._regFilter;
+        const before = (d) => !!(d && f.start_date && d < f.start_date);
+        const after = (d) => !!(d && f.end_date && d > f.end_date);
+        const out = dates.filter(d => before(d) || after(d));
+        if (!out.length) return '';
+        const side = out.some(before) && out.some(after) ? 'before the From date or after the To date'
+            : out.some(before) ? 'before the From date' : 'after the To date';
+        return out.length === 1
+            ? `One of them, dated ${formatDate(out[0])}, is ${side}, so the register does not show it.`
+            : `${out.length} of them are dated ${side}, so the register does not show them.`;
+    },
+
+    // The date a statement line posted on: the answer's, else the queue's.
+    _lineDate(answer, lineId) {
+        const line = (BankingPage._reviewLines || {})[lineId] || {};
+        return String((answer && answer.date) || line.date || '');
     },
 
     // The quick row posts through the same call as + Entry (#329): money

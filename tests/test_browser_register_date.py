@@ -330,6 +330,7 @@ class _Ledger:
             for i in range(days)
         ]
         self.review = []
+        self.candidates = []
 
     @staticmethod
     def _entry(txn, date, payee=None, class_id=None):
@@ -384,9 +385,31 @@ class _Ledger:
             line = int(path.split("/")[-2])
             self.review = [t for t in self.review if t["id"] != line]
             return route.fulfill(json={"status": "excluded"})
+        if req.method == "POST" and path.split("/")[-1] in ("add", "payout"):
+            return route.fulfill(json=self._post_line(int(path.split("/")[-2])))
+        if path.endswith("/candidates"):
+            return route.fulfill(json=self.candidates)
+        if req.method == "POST" and path.endswith("/match"):
+            line = int(path.split("/")[-2])
+            t = next(t for t in self.review if t["id"] == line)
+            self.review = [x for x in self.review if x["id"] != line]
+            return route.fulfill(json={**t, "match_status": "manual"})
         # the review queue, a page at a time (fetchAllPages)
         skip = int(parse_qs(urlsplit(req.url).query).get("skip", ["0"])[0])
         route.fulfill(json=[] if skip else self.review)
+
+    def _post_line(self, line):
+        """A statement line into the books on its own date (Add, Payout)."""
+        t = next(t for t in self.review if t["id"] == line)
+        self.review = [x for x in self.review if x["id"] != line]
+        self.entries.append(self._entry(900 + len(self.entries), t["date"], t["payee"]))
+        return {**t, "match_status": "added", "vendor_name": None}
+
+    def add_all(self, route):
+        posted = [t["id"] for t in self.review if t.get("category_account_id")]
+        for line in posted:
+            self._post_line(line)
+        route.fulfill(json={"added": len(posted), "skipped": [], "without_vendor": []})
 
     def entries_route(self, route):
         req = route.request
@@ -425,6 +448,7 @@ def _ledger_page(browser, ledger, at, classes=None, feed=False):
     if classes is not None:
         page.route("**/api/classes*", lambda r: r.fulfill(json=classes))
     if feed:
+        page.route("**/api/banking/accounts/5/feed/add-all", ledger.add_all)
         page.route(
             "**/api/banking/overview",
             lambda r: r.fulfill(
@@ -1081,5 +1105,97 @@ def test_the_journal_link_to_the_register_opens_with_the_entry_in_the_list(
             " === 'Journal Entry #140'"
         )
         assert page.evaluate(REGISTER_LINK) == "#/banking/1?start_date=2026-09-10"
+    finally:
+        page.close()
+
+
+def _statement_line(n, date, **more):
+    return {
+        "id": n,
+        "date": date,
+        "payee": f"Statement line {n}",
+        "description": "",
+        "amount": -5.0,
+        **more,
+    }
+
+
+# the statement line no longer in the queue (its payee can still be in a
+# toast: the offer to add it as a vendor)
+GONE_FROM_REVIEW = """(n) => !document.querySelector(
+    `#page-content button[onclick^="BankingPage.addLine(${n},"]`)"""
+
+
+def test_the_review_actions_say_when_the_dates_leave_the_entry_out(browser):
+    """+ Entry and the entry row say an entry dated outside From and To,
+    which the list leaves out; the review queue's Add, Payout, Add all
+    categorised and Match said nothing (#663). They say it the same way."""
+    ledger = _Ledger()
+    ledger.review = [
+        _statement_line(70, "2026-09-01"),
+        _statement_line(
+            71,
+            "2026-11-05",
+            amount=50.0,
+            suggested_payout={
+                "provider": "stripe",
+                "display_name": "Stripe",
+                "clearing_balance": 80,
+            },
+        ),
+        _statement_line(72, "2026-09-02", category_account_id=2),
+        _statement_line(73, "2026-11-20", category_account_id=2),
+        _statement_line(74, "2026-10-01"),
+    ]
+    ledger.candidates = [
+        {
+            "line_id": 105,
+            "date": "2026-09-06",
+            "payee": "Payee 105",
+            "description": "",
+            "reference": "",
+            "source_type": "bank_entry",
+            "days_off": 25,
+        }
+    ]
+    at = "#/banking/1?start_date=2026-09-15&end_date=2026-10-31"
+    page = _ledger_page(browser, ledger, at, feed=True)
+    row = lambda n: page.locator("tr", has_text=f"Statement line {n}")  # noqa: E731
+    try:
+        page.wait_for_selector("text=Statement line 70")
+        row(70).locator('button[onclick^="BankingPage.addLine"]').click()
+        _toast_with(
+            page,
+            "Added to the books. Its date, Sep 1, 2026, is before the From date,"
+            " so the register does not show it.",
+        )
+        page.wait_for_function(GONE_FROM_REVIEW, arg=70)
+
+        row(71).locator("button", has_text="Payout").click()
+        page.wait_for_selector("#payout-gross")
+        page.click("#modal-body button[type='submit']")
+        _toast_with(
+            page,
+            "Payout recorded. Its date, Nov 5, 2026, is after the To date,"
+            " so the register does not show it.",
+        )
+        page.wait_for_function(GONE_FROM_REVIEW, arg=71)
+
+        page.click("text=Add all categorised")
+        _toast_with(
+            page,
+            "Added 2. 2 of them are dated before the From date or after the To"
+            " date, so the register does not show them.",
+        )
+        page.wait_for_function(GONE_FROM_REVIEW, arg=72)
+
+        row(74).locator("button", has_text="Match").click()
+        page.locator("#modal-body button", has_text="Match").click()
+        _toast_with(
+            page,
+            "Matched. Its date, Sep 6, 2026, is before the From date,"
+            " so the register does not show it.",
+        )
+        assert page.evaluate("() => location.hash") == at
     finally:
         page.close()
