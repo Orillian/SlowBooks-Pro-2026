@@ -131,8 +131,9 @@ def test_delete_unused_account_still_works(client):
 
 # ---------------------------------------------------------------------------
 # The closing-date lock could be switched off by the principal it constrains.
-# Only an admin-role token reaches settings at all, and none are made since
-# #434; the ones made before still work, so the guard is pinned on one.
+# No token reaches settings any more: an admin-role token from before 2.29.0
+# is refused at the door (#659) and no other role writes settings, so these
+# pin both refusals, each by its own sentence.
 # ---------------------------------------------------------------------------
 
 
@@ -141,13 +142,20 @@ def test_token_cannot_clear_or_roll_back_closing_date(client, legacy_admin_token
         client.put("/api/settings", json={"closing_date": "2026-06-30"}).status_code
         == 200
     )
-    tc = _bearer(legacy_admin_token())
+    keeper = client.post("/api/tokens", json={"label": "keeper", "role": "bookkeeper"})
+    assert keeper.status_code == 201, keeper.text
+    refusals = (
+        (_bearer(legacy_admin_token()), "can't be administrators"),
+        (_bearer(keeper.json()["token"]), "Your role doesn't allow this action"),
+    )
+    for tc, sentence in refusals:
+        cleared = tc.put("/api/settings", json={"closing_date": ""})
+        assert cleared.status_code == 403, cleared.text
+        assert sentence in cleared.json()["detail"]
 
-    cleared = tc.put("/api/settings", json={"closing_date": ""})
-    assert cleared.status_code == 403, cleared.text
-
-    rolled = tc.put("/api/settings", json={"closing_date": "2026-01-01"})
-    assert rolled.status_code == 403, rolled.text
+        rolled = tc.put("/api/settings", json={"closing_date": "2026-01-01"})
+        assert rolled.status_code == 403, rolled.text
+        assert sentence in rolled.json()["detail"]
 
     assert client.get("/api/settings").json()["closing_date"] == "2026-06-30"
 
@@ -168,6 +176,7 @@ def test_token_cannot_set_closing_date_password(client, legacy_admin_token):
     tc = _bearer(legacy_admin_token())
     r = tc.put("/api/settings", json={"closing_date_password": "agent-set-this"})
     assert r.status_code == 403, r.text
+    assert "can't be administrators" in r.json()["detail"]
 
 
 def test_session_user_may_still_clear_closing_date(client):

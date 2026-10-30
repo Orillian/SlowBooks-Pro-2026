@@ -760,7 +760,7 @@ All payroll, HR, tax-form, and self-service portal endpoints are documented with
 | `/api/payments/{provider}/create-checkout-session` | POST | Create a hosted checkout for an invoice (public; the token is the capability) |
 | `/api/payments/{provider}/webhook` | POST | Provider webhook handler (`/api/stripe/webhook` still works) |
 | `/api/payments/{provider}/check-status/{invoice_id}` | POST | Ask the provider whether an invoice was paid |
-| `/api/payments/payment-link/{invoice_id}` | GET, POST | Public payment URL for an invoice: GET reads one that exists (404 with a sentence when none), POST makes it (not a read-only sign-in's) |
+| `/api/payments/payment-link/{invoice_id}` | GET, POST | Public payment URL for an invoice: GET reads one that exists (`url` null and a note when there is none), POST makes it (an administrator or bookkeeper; a read-only or accountant sign-in is refused) |
 
 ### System
 | Endpoint | Methods | Description |

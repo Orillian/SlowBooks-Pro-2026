@@ -1078,8 +1078,8 @@ def _is_token_backup_route(method: str, path: str) -> bool:
 
 
 ACCOUNTANT_READ_REFUSAL = (
-    "An accountant's sign-in reads the books, but employee records and "
-    "portal links stay with an administrator."
+    "An accountant's sign-in reads the books, but payroll, HR and employee "
+    "records stay with an administrator."
 )
 
 

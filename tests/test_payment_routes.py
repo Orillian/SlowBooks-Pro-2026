@@ -158,3 +158,26 @@ def test_a_read_never_makes_a_payment_link(client, db_session, invoice):
     assert again == made.json()["url"]
     assert client.get(f"/api/payments/payment-link/{invoice.id}").json()["url"] == again
     assert client.post("/api/payments/payment-link/999999").status_code == 404
+
+
+def test_an_accountant_cannot_make_a_payment_link(client, db_session, invoice):
+    """#659: making the link is a POST now, and an accountant's sign-in posts
+    journal entries only, so it is refused (the page already hid Copy
+    Payment Link from it; over the API the old GET would have made one)."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    r = client.post("/api/tokens", json={"label": "cpa", "role": "accountant"})
+    assert r.status_code == 201, r.text
+    cpa = TestClient(app)
+    cpa.headers["Authorization"] = f"Bearer {r.json()['token']}"
+    invoice.payment_token = None
+    db_session.commit()
+
+    made = cpa.post(f"/api/payments/payment-link/{invoice.id}")
+
+    assert made.status_code == 403, made.text
+    assert made.json()["detail"].startswith("An accountant's sign-in posts journal")
+    db_session.expire_all()
+    assert db_session.get(type(invoice), invoice.id).payment_token is None

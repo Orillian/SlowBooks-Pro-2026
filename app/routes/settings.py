@@ -162,6 +162,10 @@ def _guard_closing_period(request: Request, db: Session, fields: dict):
     the override password from them would lock out anyone who set one and
     forgot it. Tokens may still move the date FORWARD (tightening the lock),
     only loosening is refused.
+
+    Since #659 no token reaches settings at all (an administrator's token is
+    refused at the door and no other role writes settings); this stays as
+    the backstop if that ever changes.
     """
     principal = getattr(getattr(request, "state", None), "token_principal", None)
     if principal is None:

@@ -24,7 +24,8 @@ ADMIN_TOKEN_REFUSAL = (
     'The API token "{label}" was made as an administrator, and API tokens '
     "can't be administrators any more. Revoke it under Settings, API Tokens, "
     "and make a bookkeeper, accountant or read-only token for the program "
-    "that uses it."
+    "that uses it (tick Can make backups if it makes backups). Settings, "
+    "payroll and HR need an administrator signed in."
 )
 
 
