@@ -1307,3 +1307,113 @@ def test_an_edit_to_a_row_on_screen_does_not_move_it(browser):
         assert abs(page.evaluate(ROW_TOP, 120) - top) <= 1
     finally:
         page.close()
+
+
+def test_a_transfer_keeps_the_dates_and_comes_into_view(browser):
+    """A transfer posted from the register it leaves went back to the bare
+    address, which dropped the dates (#663): it keeps them, its row comes
+    into view, and one dated past To is said so."""
+    ledger = _Ledger()
+
+    def transfers(route):
+        body = route.request.post_data_json
+        txn = 900 + len(ledger.entries)
+        ledger.entries.append(ledger._entry(txn, body["date"], "Transfer to savings"))
+        route.fulfill(
+            status=201,
+            json={
+                "id": txn,
+                "date": body["date"],
+                "from_account_id": body["from_account_id"],
+                "to_account_id": body["to_account_id"],
+            },
+        )
+
+    at = "#/banking/1?start_date=2026-09-01&end_date=2026-10-31"
+    page = _ledger_page(browser, ledger, at)
+    page.route("**/api/transfers", transfers)
+
+    def transfer(date):
+        page.locator("#page-content .page-header button", has_text="Transfer").click()
+        page.wait_for_selector("#modal-body [name='from_account_id']")
+        assert page.input_value("#modal-body [name='from_account_id']") == "1"
+        page.fill("#modal-body [name='date']", date)
+        page.fill("#modal-body [name='amount']", "100")
+        page.click("#modal-body button[type='submit']")
+
+    try:
+        transfer("2026-10-25")
+        _toast_with(page, "Transfer posted")
+        page.wait_for_function(IN_VIEW, arg=ledger.entries[-1]["transaction_id"])
+        assert page.evaluate(SCROLLED) > 0
+        assert page.evaluate("() => location.hash") == at
+        assert page.input_value("#reg-end") == "2026-10-31"
+
+        transfer("2026-11-15")
+        _toast_with(
+            page,
+            "Transfer posted. Its date, Nov 15, 2026, is after the To date,"
+            " so the register does not show it.",
+        )
+        page.wait_for_selector("#modal-overlay.hidden", state="attached")
+        assert page.evaluate("() => location.hash") == at
+    finally:
+        page.close()
+
+
+def test_a_registers_filter_is_not_carried_to_another(browser):
+    """The filter a register goes back to is its own (#663): from a view
+    that belongs to another account (a reconciliation's Later), that
+    account's register opens on its own address, not on this one's dates."""
+    ledger = _Ledger()
+    at = "#/banking/1?start_date=2026-09-01&end_date=2026-10-31"
+    page = _ledger_page(browser, ledger, at)
+    page.route(
+        "**/api/banking/reconciliations/7/transactions",
+        lambda r: r.fulfill(
+            json={
+                "account_id": 4,
+                "statement_date": "2026-09-30",
+                "statement_balance": 0,
+                "beginning_balance": 0,
+                "cleared_total": 0,
+                "difference": 0,
+                "ticked_after_date": 0,
+                "transactions": [],
+            }
+        ),
+    )
+    try:
+        assert page.evaluate("() => BankingPage._regUrl(1)") == at
+        page.evaluate("async () => { await BankingPage.showReconcileView(7); }")
+        page.locator("#page-content .page-header button", has_text="Later").click()
+        page.wait_for_function(
+            "() => BankingPage._ctx && BankingPage._ctx.accountId === 4"
+        )
+        assert page.evaluate("() => location.hash") == "#/banking/4"
+        assert page.input_value("#reg-start") == ""
+        assert page.input_value("#reg-end") == ""
+    finally:
+        page.close()
+
+
+def test_a_from_in_the_address_is_the_one_kept(browser):
+    """A register opened on an address with dates (a bookmark, a report's
+    link, Back) is read from its From: that is the From kept, and the bare
+    address opens on it next, without the To (#663)."""
+    page = _register_page(
+        browser, [], "#/banking/1?start_date=2026-09-15&end_date=2026-09-30"
+    )
+    try:
+        assert page.evaluate(KEPT, 1) == "2026-09-15"
+        _open_register(page, 4, "")
+        _open_register(page, 1, "2026-09-15")
+        assert (
+            page.evaluate("() => location.hash") == "#/banking/1?start_date=2026-09-15"
+        )
+        assert page.input_value("#reg-end") == ""
+        # an address with only a To keeps the From it had
+        _visit(page, "#/banking/1?end_date=2026-09-20", "#reg-end[value='2026-09-20']")
+        assert page.evaluate(KEPT, 1) == "2026-09-15"
+    finally:
+        page.close()
