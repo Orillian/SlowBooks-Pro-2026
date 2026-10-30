@@ -2379,7 +2379,7 @@ td > select[class$="-fund"] { min-width: 124px; }
 .qbr-tick { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; color: var(--text-primary); }
 .qbr-bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
 .qbr-count { color: var(--text-secondary); }
-.qbr-scroll { max-height: 280px; overflow: auto; border: 1px solid var(--panel-border); background: var(--panel-bg); }
+.qbr-scroll { max-height: 280px; overflow: auto; scroll-padding-top: 28px; border: 1px solid var(--panel-border); background: var(--panel-bg); }
 .qbr-scroll thead th { position: sticky; top: 0; z-index: 1; }
 .qbr-scroll td.qbr-pick-cell { width: 28px; }
 .qbr-scroll td.qbr-nowrap { white-space: nowrap; }

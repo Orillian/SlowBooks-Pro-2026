@@ -980,6 +980,51 @@ def test_a_ledger_files_problems_are_listed_and_answered(browser):
         page.close()
 
 
+FOCUSED = """() => {
+    const el = document.activeElement;
+    return el.getAttribute('aria-label') || el.textContent.trim();
+}"""
+
+
+def test_a_long_problem_list_is_one_stop_for_the_keyboard(browser):
+    """Thousands of transactions must not be thousands of Tab presses on
+    the way to Import: Tab enters the list and leaves it, the arrow keys,
+    Home and End move in it, Space ticks."""
+    sent = []
+    page = _problem_page(browser, sent)
+    try:
+        group = page.locator("#qbr [data-kind=unbalanced]")
+        group.get_by_role("button", name="Select none").focus()
+        page.keyboard.press("Tab")
+        first = "Import Check 1001 of Jan 2, 2024, Harbor Properties, off by $10.00"
+        assert page.evaluate(FOCUSED) == first
+        page.keyboard.press("ArrowDown")
+        page.keyboard.press("ArrowDown")
+        page.keyboard.press("Space")
+        third = "Import Check 1003 of Jan 4, 2024, Harbor Properties, off by $10.00"
+        assert page.evaluate(FOCUSED) == third
+        assert page.evaluate(PROBLEM_LIST)["ticked"]["unbalanced"] == [
+            False,
+            False,
+            True,
+        ]
+        page.keyboard.press("Home")
+        assert page.evaluate(FOCUSED) == first
+        page.keyboard.press("End")
+        assert page.evaluate(FOCUSED) == third
+        page.keyboard.press("ArrowUp")
+        # out of the list in one press (Import waits on the file's notice),
+        # and back in at the row last used
+        page.keyboard.press("Tab")
+        assert page.evaluate(FOCUSED) == "Cancel"
+        page.keyboard.press("Shift+Tab")
+        assert page.evaluate(FOCUSED) == (
+            "Import Check 1002 of Jan 3, 2024, Harbor Properties, off by $10.00"
+        )
+    finally:
+        page.close()
+
+
 def test_the_problem_list_reads_at_aa_in_both_themes(browser):
     from tests.test_theme_contrast import _theme, below_threshold, sweep_of
 

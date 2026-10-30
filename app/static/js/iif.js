@@ -351,11 +351,12 @@ const IIFPage = {
             </section>`;
         }
         if (unbalanced.length) {
-            const rows = unbalanced.map(p => {
+            // one stop for Tab however long the list: the arrow keys move in it
+            const rows = unbalanced.map((p, i) => {
                 const what = `${p.type}${p.num ? ` ${p.num}` : ''} of ${formatDate(p.date)}${p.name ? `, ${p.name}` : ''}`;
                 const off = formatCurrency(Math.abs(Number(p.off)));
                 return `<tr>
-                    <td class="qbr-pick-cell"><input type="checkbox" class="qbr-pick" data-kind="unbalanced" data-key="${escapeHtml(p.key)}" aria-label="Import ${escapeHtml(what)}, off by ${escapeHtml(off)}" onchange="IIFPage._reviewChanged()"></td>
+                    <td class="qbr-pick-cell"><input type="checkbox" class="qbr-pick" data-kind="unbalanced" data-key="${escapeHtml(p.key)}" tabindex="${i ? -1 : 0}" aria-label="Import ${escapeHtml(what)}, off by ${escapeHtml(off)}" onchange="IIFPage._reviewChanged()"></td>
                     <td class="qbr-nowrap">${formatDate(p.date)}</td>
                     <td>${escapeHtml(p.type)}</td>
                     <td>${escapeHtml(p.num || '')}</td>
@@ -366,9 +367,9 @@ const IIFPage = {
             }).join('');
             html += `<section class="qbr-group" data-kind="unbalanced" aria-labelledby="qbr-h-unbalanced">
                 <h5 id="qbr-h-unbalanced">${IIFPage._count(unbalanced.length, 'transaction')} that ${unbalanced.length === 1 ? 'does' : 'do'} not balance</h5>
-                <p class="qbr-note">${escapeHtml(notes.unbalanced || '')}</p>
+                <p class="qbr-note">${escapeHtml(notes.unbalanced || '')} <span id="qbr-keys-hint">In the list, the arrow keys move from row to row and Tab leaves it.</span></p>
                 ${IIFPage._bulk('unbalanced', 'Transactions that do not balance')}
-                <div class="qbr-scroll"><table>
+                <div class="qbr-scroll qbr-roving"><table aria-describedby="qbr-keys-hint">
                     <thead><tr><th scope="col"><span class="visually-hidden">Import</span></th><th scope="col">Date</th><th scope="col">Type</th><th scope="col">Num</th><th scope="col">Name</th><th scope="col" class="amount">Amount</th><th scope="col" class="amount">Off by</th></tr></thead>
                     <tbody>${rows}</tbody>
                 </table></div>
@@ -386,9 +387,36 @@ const IIFPage = {
         }
         IIFPage._wide(true);
         $('#qbcsv-import-result').innerHTML = html;
+        for (const list of document.querySelectorAll('#qbr .qbr-roving')) {
+            list.addEventListener('keydown', IIFPage._listKeys);
+            list.addEventListener('focusin', IIFPage._listFocus);
+        }
         IIFPage._reviewChanged();
         toast(`Nothing imported yet: ${IIFPage._count(problems.length, 'problem')} to decide below`, 'warning');
         App.setStatus('Interoperability — Choose what to import');
+    },
+
+    // Up and Down, Home and End, between a long list's boxes: Tab enters
+    // the list at the row last used and leaves it.
+    _listKeys(event) {
+        const moves = { ArrowDown: 1, ArrowUp: -1, Home: 'first', End: 'last' };
+        const from = event.target;
+        if (!(event.key in moves) || !from.matches('input.qbr-pick')) return;
+        event.preventDefault();
+        const boxes = [...event.currentTarget.querySelectorAll('input.qbr-pick')];
+        const move = moves[event.key];
+        const at = boxes.indexOf(from);
+        const to = boxes[move === 'first' ? 0 : move === 'last' ? boxes.length - 1
+            : Math.max(0, Math.min(boxes.length - 1, at + move))];
+        if (to && to !== from) to.focus();
+    },
+
+    // the row in use, by keyboard or mouse, is where Tab comes back in
+    _listFocus(event) {
+        const box = event.target;
+        if (!box.matches('input.qbr-pick') || box.tabIndex === 0) return;
+        for (const other of event.currentTarget.querySelectorAll('input.qbr-pick')) other.tabIndex = -1;
+        box.tabIndex = 0;
     },
 
     _picks(kind) {
