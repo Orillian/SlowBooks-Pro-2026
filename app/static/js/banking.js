@@ -1046,7 +1046,7 @@ const BankingPage = {
         // class filter puts a line in its place: the row has no class box, so
         // its entry would post with none and leave the list, and the running
         // balance above it counts that class's lines only.
-        const quickRow = f.class_id ? BankingPage._entryRowOff()
+        const quickRow = f.class_id ? BankingPage._entryRowOff(!!(chosen && chosen.is_system_default))
             : BankingPage._quickEntryRow(id, kind, chart, outLabel, inLabel);
         if (!reg.entries.length) {
             html += `<div class="empty-state"><p>${filtered ? 'Nothing posted to this account for these filters' : 'Nothing posted to this account yet'}</p></div>`;
@@ -1453,10 +1453,15 @@ const BankingPage = {
                 <tr data-write><td colspan="10" id="qe-category-host" style="padding:0; border:0;"></td></tr></tfoot>`;
     },
 
-    // In the entry row's place while a class is chosen (#663).
-    _entryRowOff() {
+    // In the entry row's place while a class is chosen (#663). The
+    // company's default class (Uncategorized) counts every line with no
+    // class, the row's entry among them, so there the balance is the
+    // reason alone.
+    _entryRowOff(isDefault = false) {
         const cls = T('class').toLowerCase();
-        return `<tfoot><tr id="reg-quick-entry-off" data-write><td colspan="10" style="padding:6px 10px; font-size:11px; color:var(--gray-500);">The entry row is hidden while a ${cls} is chosen: it has no ${cls} box, and the running balance counts this ${cls} only. Choose All ${T('classes').toLowerCase()} to use it, or post with + Entry.</td></tr></tfoot>`;
+        const why = isDefault ? `the running balance counts this ${cls} only`
+            : `it has no ${cls} box, and the running balance counts this ${cls} only`;
+        return `<tfoot><tr id="reg-quick-entry-off" data-write><td colspan="10" style="padding:6px 10px; font-size:11px; color:var(--gray-500);">The entry row is hidden while a ${cls} is chosen: ${why}. Choose All ${T('classes').toLowerCase()} to use it, or post with + Entry.</td></tr></tfoot>`;
     },
 
     // Enter in the quick row. As before, it posts the entry, unless the

@@ -254,9 +254,10 @@ def test_the_entry_row_stays_under_a_date_filter_not_a_class_one(browser):
         assert page.evaluate(ROW_UNDER_ENTRIES)
 
         # a class: the line says why there is no row, and All classes brings it back
-        register["class_name"] = "Unassigned"
+        page.route("**/api/classes*", lambda r: r.fulfill(json=CLASSES))
+        register["class_name"] = "Site Prep"
         _visit(
-            page, "#/banking/1?start_date=2026-10-01&class_id=1", "#reg-quick-entry-off"
+            page, "#/banking/1?start_date=2026-10-01&class_id=2", "#reg-quick-entry-off"
         )
         assert page.locator("#reg-quick-entry").count() == 0
         assert page.inner_text("#reg-quick-entry-off") == (
@@ -272,8 +273,18 @@ def test_the_entry_row_stays_under_a_date_filter_not_a_class_one(browser):
 
         # and an empty register under a class says it in the same place
         register["entries"] = []
-        _visit(page, "#/banking/1?class_id=1", "#reg-quick-entry-off")
+        _visit(page, "#/banking/1?class_id=2", "#reg-quick-entry-off")
         assert page.locator("#reg-quick-entry").count() == 0
+
+        # the default class counts the lines with no class, the row's among
+        # them: the balance is the reason there
+        register["class_name"] = "Unassigned"
+        _visit(page, "#/banking/1?class_id=1", "#reg-quick-entry-off")
+        assert page.inner_text("#reg-quick-entry-off") == (
+            "The entry row is hidden while a class is chosen: the running balance"
+            " counts this class only. Choose All classes to use it, or post with"
+            " + Entry."
+        )
     finally:
         page.close()
 
