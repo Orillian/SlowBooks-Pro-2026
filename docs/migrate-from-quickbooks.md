@@ -142,9 +142,14 @@ transfer, general journal entry and opening balance comes across as a
 journal entry with its date, number, name and memo, and each account ends
 with the balance QuickBooks shows. Uploading it again posts nothing twice.
 
-The file is checked first. One that checks out imports at once. One with
-problems imports nothing yet (since 2.31.2): the page lists the problems,
-grouped, for you to tick the ones to accept and leave the rest:
+The file is checked first. One that checks out imports at once. A row
+whose date or amount cannot be read refuses the whole file, every such row
+listed: a guess would post a wrong date or amount. QuickBooks writes a date
+as month/day/year and an amount as 1,234.56; a file whose dates are all
+day/month/year (one with a 20/03/2024 in it, and none with a second part
+over 12) is read that way, and the result says so. One with other problems
+imports nothing yet (since 2.31.2): the page lists the problems, grouped,
+for you to tick the ones to accept and leave the rest:
 
 - **A transaction that does not balance**, with its date, type, number,
   name, amount and how far off it is, and on which side ("$10.00 more in
@@ -163,9 +168,11 @@ grouped, for you to tick the ones to accept and leave the rest:
   inactive parent, a chain too deep) says why. A transaction that touches
   an account left unticked is left out.
 - **The file may be cut off**: a section whose lines do not add up to the
-  total QuickBooks printed, a file that ends inside a section, or a row that
-  cannot be read. Ticked, what is there imports; unticked, nothing does.
-  See *Long histories* below.
+  total QuickBooks printed, a file that ends inside a section or after a
+  section's Total line without the report's closing TOTAL row, or a TOTAL
+  row that is not the sum of the file's lines (a section taken out).
+  Ticked, what is there imports; unticked, nothing does. See *Long
+  histories* below.
 - **Transactions in a closed period**: a notice, with nothing to tick, of
   how many are dated on or before the closing date and which dates. They
   are left out and the rest imports; to bring them in, move the closing
@@ -231,10 +238,11 @@ months and gets no warning. A transaction's lines share a date, so a
 year never splits one, and a line already posted is skipped on the next file.
 
 **Long histories.** QuickBooks' Save as CSV also stops a report at 32,768 rows
-with no warning: the last section ends without its Total line, and the income
-and expense accounts, which come after the balance sheet accounts, may be
-missing altogether. The import says the file may be cut off, and the
-transactions missing their other side do not balance. One year per file
+with no warning: the last section ends without its Total line (or the file
+without the report's TOTAL row), and the income and expense accounts, which
+come after the balance sheet accounts, may be missing altogether. The import
+says the file may be cut off, and the transactions missing their other side
+do not balance. One year per file
 keeps most companies under the cap; a year that still does not fit can go in
 two files split at a month end.
 
