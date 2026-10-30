@@ -34,6 +34,7 @@ from app.services.qb_ledger_import import SOURCE_TYPE
 from tests.test_qb_desktop_ledger import ACCOUNTS, FIXTURE, _chart
 from tests.test_qb_desktop_round_trip import GJ_ONLY
 from tests.test_qb_ledger_other_sections import _report as _other_sections_report
+from tests.qb_ledger_files import build, grand, heading, row, total
 
 URL = "/api/csv/import/qb-report"
 CHECK_1002 = "Check 1002 · 2024-01-31 · Harbor Properties"
@@ -219,19 +220,97 @@ def test_a_transaction_left_out_stays_out_until_a_later_upload(
     assert len(_imported(db_session)) == 8
 
 
-def test_a_numbered_differences_account_is_kept_when_renamed(
+# February's rent from a report filtered to the bank account: the check's
+# rent line is not in the file, so it does not balance
+FEBRUARY = build(
+    [
+        heading("Operating Checking 4321"),
+        row(
+            "Check",
+            "02/05/2024",
+            "1003",
+            "Harbor Properties",
+            "February rent",
+            "Rent",
+            "",
+            "1,000.00",
+        ),
+        total("Operating Checking 4321", "0.00", "1,000.00"),
+        grand("0.00", "1,000.00"),
+    ]
+)
+CHECK_1003 = "Check 1003 · 2024-02-05 · Harbor Properties"
+
+
+def test_the_differences_account_is_kept_when_renamed(
     client, db_session, seed_accounts
 ):
+    """The account the import made, renamed, is still the one: found as the
+    system account it made, by its number."""
+    _chart(db_session)
+    _upload(client, UNBALANCED, {"unbalanced": [CHECK_1002]})
+    made = _account(db_session, "Import Differences")
+    assert made.is_system and made.account_number == "3950"
+    r = client.put(f"/api/accounts/{made.id}", json={"name": "Suspense"})
+    assert r.status_code == 200, r.text
+    first = _upload(client, FEBRUARY)
+    assert "3950 Suspense" in first["problem_notes"]["unbalanced"]
+    data = _upload(client, FEBRUARY, {"unbalanced": [CHECK_1003]})
+    assert data["differences_account"] == "3950 Suspense"
+    assert _account(db_session, "Import Differences") is None
+
+
+def test_the_charts_own_3950_never_takes_the_differences(
+    client, db_session, seed_accounts
+):
+    """An equity account of the chart's own numbered 3950 (Partner
+    Distributions) is not the import's: the import makes its account on
+    the next number free nearby, and the partner's account gets nothing."""
     _chart(db_session)
     db_session.add(
-        Account(account_number="3950", name="Suspense", account_type=AccountType.EQUITY)
+        Account(
+            account_number="3950",
+            name="Partner Distributions",
+            account_type=AccountType.EQUITY,
+        )
     )
     db_session.commit()
     first = _upload(client, UNBALANCED)
-    assert "3950 Suspense" in first["problem_notes"]["unbalanced"]
+    assert "3951 Import Differences" in first["problem_notes"]["unbalanced"]
     data = _upload(client, UNBALANCED, {"unbalanced": [CHECK_1002]})
-    assert data["differences_account"] == "3950 Suspense"
-    assert _account(db_session, "Import Differences") is None
+    assert data["differences_account"] == "3951 Import Differences"
+    made = _account(db_session, "Import Differences")
+    assert (made.account_number, made.is_system) == ("3951", True)
+    assert made.account_type == AccountType.EQUITY
+    partner = _account(db_session, "Partner Distributions")
+    assert (
+        db_session.query(TransactionLine)
+        .filter(TransactionLine.account_id == partner.id)
+        .count()
+        == 0
+    )
+
+
+def test_an_equity_account_named_import_differences_is_the_one(
+    client, db_session, seed_accounts
+):
+    """One the chart brought by its name (a chart import, where nothing is
+    a system account) is used as it is."""
+    _chart(db_session)
+    db_session.add(
+        Account(
+            account_number="3990",
+            name="Import Differences",
+            account_type=AccountType.EQUITY,
+        )
+    )
+    db_session.commit()
+    data = _upload(client, UNBALANCED, {"unbalanced": [CHECK_1002]})
+    assert data["differences_account"] == "3990 Import Differences"
+    assert (
+        db_session.query(Account).filter(Account.name == "Import Differences").count()
+        == 1
+    )
 
 
 # ── an account missing from the chart ───────────────────────────────────

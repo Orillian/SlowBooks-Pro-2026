@@ -52,7 +52,7 @@ from app.models.accounts import (
 )
 from app.models.transactions import Transaction
 from app.services.account_label import account_label, label_for
-from app.services.accounting import create_journal_entry, ensure_account
+from app.services.accounting import create_journal_entry
 from app.services.safe_errors import DataProblem
 from app.services.settings_service import use_account_numbers
 
@@ -442,8 +442,11 @@ _BANK_KINDS = {DetailType.BANK: "bank", DetailType.CREDIT_CARD: "credit_card"}
 # Equity holds what bringing books across leaves over: the balance stays on
 # the balance sheet until someone clears it, where an expense account would
 # close it into Retained Earnings at the year end. 3950 sits beside 3900 and
-# is no control account, no seeded one and none another feature makes.
+# is no control account, no seeded one and none another feature makes; a
+# chart that numbers an account of its own 3950 (Partner Distributions)
+# keeps it, and the import takes the next number free after it.
 DIFFERENCES_NUMBER = "3950"
+DIFFERENCES_NUMBERS = tuple(str(n) for n in range(3950, 4000))
 DIFFERENCES_NAME = "Import Differences"
 DIFFERENCE_MEMO = "Difference in the QuickBooks file"
 _UNREAD_ANSWERS = "The answers to the file's problems could not be read."
@@ -486,16 +489,52 @@ def read_answers(raw) -> dict | None:
 
 
 def _find_differences(db: Session):
-    """3950 Import Differences by its number first, as Opening Balance
-    Equity is found, so one renamed is still the one."""
+    """The import's own Import Differences: an equity account of that name
+    (the one it made first, else one the chart brought), or, renamed, the
+    system account it made on a number of its own. Another equity account
+    numbered 3950 is the chart's, never this one."""
+    equity = db.query(Account).filter(Account.account_type == AccountType.EQUITY)
+    named = equity.filter(Account.name == DIFFERENCES_NAME)
     return (
-        db.query(Account)
-        .filter(
-            Account.account_number == DIFFERENCES_NUMBER,
-            Account.account_type == AccountType.EQUITY,
+        named.filter(Account.is_system.is_(True)).order_by(Account.id).first()
+        or named.order_by(Account.id).first()
+        or equity.filter(
+            Account.is_system.is_(True),
+            Account.account_number.in_(DIFFERENCES_NUMBERS),
         )
+        .order_by(Account.account_number)
         .first()
-    ) or db.query(Account).filter(Account.name == DIFFERENCES_NAME).first()
+    )
+
+
+def _differences_number(db: Session) -> str | None:
+    """3950, or the next number free after it in 3950-3999: a chart that
+    uses 3950 itself keeps it. None when all of them are taken."""
+    taken = {
+        n
+        for (n,) in db.query(Account.account_number).filter(
+            Account.account_number.in_(DIFFERENCES_NUMBERS)
+        )
+    }
+    return next((n for n in DIFFERENCES_NUMBERS if n not in taken), None)
+
+
+def _ensure_differences(db: Session) -> Account:
+    """Import Differences, made the first time it is needed, as the system
+    accounts are (ensure_account), on its own number."""
+    found = _find_differences(db)
+    if found is not None:
+        return found
+    acct = Account(
+        name=DIFFERENCES_NAME,
+        account_number=_differences_number(db),
+        account_type=AccountType.EQUITY,
+        is_system=True,
+        balance=Decimal("0"),
+    )
+    db.add(acct)
+    db.flush()
+    return acct
 
 
 def _differences_label(db: Session) -> str:
@@ -503,7 +542,7 @@ def _differences_label(db: Session) -> str:
     if found is not None:
         return label_for(found, db)
     return account_label(
-        DIFFERENCES_NUMBER, DIFFERENCES_NAME, use_account_numbers(db), " "
+        _differences_number(db), DIFFERENCES_NAME, use_account_numbers(db), " "
     )
 
 
@@ -794,9 +833,7 @@ def import_ledger_report(
         ]
         if not t["balanced"]:
             if differences is None:
-                differences = _find_differences(db) or ensure_account(
-                    db, DIFFERENCES_NUMBER, DIFFERENCES_NAME, AccountType.EQUITY
-                )
+                differences = _ensure_differences(db)
             off = _off(journal)
             posted.append(
                 {
