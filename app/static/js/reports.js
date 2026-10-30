@@ -754,8 +754,8 @@ const ReportsPage = {
                 // so that Back from the document puts focus on this link,
                 // not on the period select (W-7).
                 const src = link
-                    ? `<a href="${escapeHtml(link)}" data-row-key="line:${escapeHtml(String(e.line_id || e.transaction_id || ''))}" onclick="ReportsPage._leaveFrom(this)" style="color:var(--text-link); text-decoration:none;">${escapeHtml(sourceWord(e.source_type || 'journal'))} #${num}</a>`
-                    : (e.source_type ? escapeHtml(sourceWord(e.source_type)) : '');
+                    ? `<a href="${escapeHtml(link)}" data-row-key="line:${escapeHtml(String(e.line_id || e.transaction_id || ''))}" onclick="ReportsPage._leaveFrom(this)" style="color:var(--text-link); text-decoration:none;">${escapeHtml(sourceWord(e.source_type || 'journal', e.source_kind))} #${num}</a>`
+                    : (e.source_type ? escapeHtml(sourceWord(e.source_type, e.source_kind)) : '');
                 const mark = e.reconciliation_id ? 'R' : (e.cleared ? '✓' : '');
                 return `<tr${e.voided ? ' class="row--void" style="color:var(--text-muted); text-decoration:line-through;"' : ''}>
                     <td>${formatDate(e.date)}</td>
@@ -2091,7 +2091,7 @@ const ReportsPage = {
                             <td>${formatDate(e.date)}</td>
                             <td>${escapeHtml(e.description)}</td>
                             <td>${escapeHtml(e.reference)}</td>
-                            <td style="font-size:10px; color:var(--gray-500);">${escapeHtml(sourceWord(e.source_type))}</td>
+                            <td style="font-size:10px; color:var(--gray-500);">${escapeHtml(sourceWord(e.source_type, e.source_kind))}</td>
                             <td style="font-size:10px;">${escapeHtml(e.class_name || '')}</td>
                             <td class="amount">${e.debit > 0 ? formatCurrency(e.debit) : ""}</td>
                             <td class="amount">${e.credit > 0 ? formatCurrency(e.credit) : ""}</td>
@@ -4190,7 +4190,7 @@ ReportsPage.possibleDuplicates = async function (prefill) {
                     <td>${escapeHtml(e.reference || '')}</td>
                     <td>${escapeHtml(e.payee || '')}</td>
                     <td>${escapeHtml(e.memo || '')}</td>
-                    <td>${escapeHtml(ReportsPage._DUP_SOURCE[e.source] || e.source)} <span style="color:var(--gray-500);">· ${escapeHtml(sourceWord(e.source_type || 'journal'))}</span></td>
+                    <td>${escapeHtml(ReportsPage._DUP_SOURCE[e.source] || e.source)} <span style="color:var(--gray-500);">· ${escapeHtml(sourceWord(e.source_type || 'journal', e.source_kind))}</span></td>
                     <td>${e.reconciled ? 'Reconciled' : (e.cleared ? 'Cleared' : '')}</td>
                     <td class="amount">${formatCurrency(g.amount)}</td>
                     <td style="text-align:right; white-space:nowrap;">

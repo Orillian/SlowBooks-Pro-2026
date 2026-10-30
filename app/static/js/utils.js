@@ -48,8 +48,10 @@ function formatDate(dateStr) {
 // A posting's kind in the app's words rather than its source_type key: a
 // drill-down line says "Bill payment #3", "Card charge #2223", "Journal
 // entry #2224" (NEW-40). A void, an edit or an applied payment says so
-// after the document's word; a key nobody listed is spelled out.
-function sourceWord(type) {
+// after the document's word; a key nobody listed is spelled out. `kind` is
+// an import's own word for the row (source_kind): QuickBooks Desktop's
+// "Check" reads "Check (imported)" (#663).
+function sourceWord(type, kind) {
     const words = {
         invoice: () => T('Invoice'), bill: 'Bill', payment: 'Payment', bill_payment: 'Bill payment',
         vendor_credit: 'Vendor credit', credit_memo: 'Credit memo', sales_receipt: 'Sales receipt',
@@ -67,6 +69,7 @@ function sourceWord(type) {
         sage_import: 'Sage 50 import', wave_import: 'Wave import', zoho_import: 'Zoho Books import',
         gnucash_import: 'GnuCash import', qb_ledger_import: 'QuickBooks Desktop import',
     };
+    if (kind) return `${kind} (imported)`;
     const t = String(type || 'journal');
     for (const [end, word] of [['_void', 'void'], ['_edit', 'edit'], ['_apply', 'applied']]) {
         if (t.endsWith(end) && t.length > end.length) return `${sourceWord(t.slice(0, -end.length))} ${word}`;

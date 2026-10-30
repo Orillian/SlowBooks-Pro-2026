@@ -479,7 +479,7 @@ def import_ledger_report(
             touches_control += 1
         # as a register entry reads (#663): QuickBooks' Name is the payee
         # (none on an entry with no name), its Num the reference, each
-        # line's Memo on the line
+        # line's Memo on the line, its Type the register's Type
         create_journal_entry(
             db,
             first["date"],
@@ -490,6 +490,7 @@ def import_ledger_report(
             is_adjusting=bool(adjusting_only),
             posted_by=posted_by,
             source_ref=key,
+            source_kind=first["type"][:50],
         )
         have.add(key)
         result["journals"] += 1

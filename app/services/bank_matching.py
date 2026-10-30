@@ -90,6 +90,7 @@ def candidate_lines(
             "payee": payees.get(txn.id, ""),
             "reference": refs.get(txn.id, ""),
             "source_type": txn.source_type,
+            "source_kind": txn.source_kind,
             "source_link": source_link(txn),
             "amount": float(amount),
             "cleared": bool(tl.cleared),

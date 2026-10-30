@@ -1,4 +1,5 @@
-"""transactions.source_ref; ledger imports read as register entries (#663)
+"""transactions.source_ref and source_kind; ledger imports read as register
+entries (#663)
 
 QuickBooks Desktop's Transaction Detail by Account import wrote each journal's
 description as "{Type} {Num} — {Name}: {Memo}" and kept its duplicate key,
@@ -6,8 +7,10 @@ description as "{Type} {Num} — {Name}: {Memo}" and kept its duplicate key,
 as the reference. The register shows a journal's description as its payee,
 so payees read "Check EFT — Acme Supply: memo". From here the import writes
 QuickBooks' Name as the description (the payee; empty with no name), its Num
-as the reference (Ref #), and the key to source_ref, a column of its own; each
-line's memo stays on the line, where it always was.
+as the reference (Ref #), the key to source_ref and QuickBooks' Type to
+source_kind, columns of their own; each line's memo stays on the line, where
+it always was. The register's Type column shows the type ("Check
+(imported)").
 
 The entries already imported are rewritten the same way, once: source_type
 qb_ledger_import only, and only an entry whose description and key read back
@@ -18,11 +21,12 @@ the name, then ": " and the first memo when there was one; a name or memo may
 hold ":" or " — ", so a reading must also agree with the key and with the
 lines, which carry each memo or, with none, the name. An entry with no such
 reading, or more than one, is left as it was, and the import still finds its
-key in the reference. Written out here so this migration never changes with
-the importer.
+key in the reference. An entry rewritten gets the type its key starts with as
+its source_kind; one left as it was has none. Written out here so this
+migration never changes with the importer.
 
 downgrade puts each key back in the reference, where the import looked for
-it before, and drops the column; the descriptions keep the name.
+it before, and drops both columns; the descriptions keep the name.
 
 Revision ID: 4810bd59e481
 Revises: d7b3f9a1c5e2
@@ -104,6 +108,7 @@ _transactions = sa.table(
     sa.column("reference", sa.String),
     sa.column("source_type", sa.String),
     sa.column("source_ref", sa.String),
+    sa.column("source_kind", sa.String),
 )
 _lines = sa.table(
     "transaction_lines",
@@ -184,6 +189,14 @@ def read_back(description, reference, day, line_texts):
     return found[0], split[1]
 
 
+def type_of(reference, day):
+    """QuickBooks' Type at the head of an entry's key, or None."""
+    key = reference or ""
+    at = key.find(f" · {str(day)[:10]}")
+    split = split_head(key[:at]) if at > 0 else None
+    return split[0] if split else None
+
+
 def rewrite(bind) -> int:
     """Rewrite the entries the importer wrote before #663; how many."""
     t, ln = _transactions, _lines
@@ -207,7 +220,13 @@ def rewrite(bind) -> int:
             continue
         name, num = found
         changes.append(
-            {"_id": row.id, "_name": name, "_num": num or None, "_key": row.reference}
+            {
+                "_id": row.id,
+                "_name": name,
+                "_num": num or None,
+                "_key": row.reference,
+                "_kind": (type_of(row.reference, row.date) or "")[:50] or None,
+            }
         )
     if changes:
         bind.execute(
@@ -217,6 +236,7 @@ def rewrite(bind) -> int:
                 description=sa.bindparam("_name"),
                 reference=sa.bindparam("_num"),
                 source_ref=sa.bindparam("_key"),
+                source_kind=sa.bindparam("_kind"),
             ),
             changes,
         )
@@ -228,9 +248,14 @@ def upgrade() -> None:
     insp = sa.inspect(bind)
     if "transactions" not in insp.get_table_names():
         return
-    if "source_ref" not in {c["name"] for c in insp.get_columns("transactions")}:
+    have = {c["name"] for c in insp.get_columns("transactions")}
+    if "source_ref" not in have:
         op.add_column(
             "transactions", sa.Column("source_ref", sa.String(100), nullable=True)
+        )
+    if "source_kind" not in have:
+        op.add_column(
+            "transactions", sa.Column("source_kind", sa.String(50), nullable=True)
         )
     rewrite(bind)
 
@@ -240,7 +265,8 @@ def downgrade() -> None:
     insp = sa.inspect(bind)
     if "transactions" not in insp.get_table_names():
         return
-    if "source_ref" not in {c["name"] for c in insp.get_columns("transactions")}:
+    have = {c["name"] for c in insp.get_columns("transactions")}
+    if "source_ref" not in have:
         return
     t = _transactions
     bind.execute(
@@ -250,3 +276,5 @@ def downgrade() -> None:
     )
     with op.batch_alter_table("transactions") as batch:
         batch.drop_column("source_ref")
+        if "source_kind" in have:
+            batch.drop_column("source_kind")

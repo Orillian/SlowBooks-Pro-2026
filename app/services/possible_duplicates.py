@@ -333,6 +333,7 @@ def possible_duplicates(
                     "payee": m["payee"],
                     "memo": m["description"],
                     "source_type": m["source_type"],
+                    "source_kind": m["source_kind"],
                     "source": (
                         "imported"
                         if m["line_id"] in imported

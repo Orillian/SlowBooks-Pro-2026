@@ -1118,6 +1118,7 @@ def general_ledger(
                 "credit": float(tl.credit),
                 "running_balance": float(a["_running"]),
                 "source_type": txn.source_type or "journal",
+                "source_kind": txn.source_kind,
                 "class_name": class_names.get(tl.class_id or txn.class_id)
                 or uncat_name,
             }

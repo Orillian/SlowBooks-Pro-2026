@@ -89,6 +89,8 @@ class JournalEntryResponse(BaseModel):
     class_id: Optional[int] = None
     job_id: Optional[int] = None
     source_type: str = ""
+    # an import's own word for the row (#663): QuickBooks' "Check"
+    source_kind: str = ""
     # Whether a hand-entered entry opens for editing from the register
     # (#388), the statement date of the completed reconciliation that holds
     # it when one does, the sentence the form shows about it, and — after an

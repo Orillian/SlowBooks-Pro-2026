@@ -65,6 +65,11 @@ class Transaction(Base):
     # upload of QuickBooks Desktop's Transaction Detail by Account checks,
     # so the reference can hold QuickBooks' Num. NULL on everything else.
     source_ref = Column(String(100), nullable=True)
+    # The other program's own word for the row, kept by the same import:
+    # QuickBooks' Type ("Check", "Bill Pmt -Check", "General Journal"), which
+    # the register's Type column shows as "Check (imported)". NULL on
+    # everything else.
+    source_kind = Column(String(50), nullable=True)
 
     # Class tracking dimension (QB-style); NULL groups with Uncategorized
     class_id = Column(Integer, ForeignKey("classes.id"), nullable=True)
