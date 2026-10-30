@@ -990,7 +990,10 @@ const BankingPage = {
         let review = [];
         // the whole queue: a year fetched from a feed can be more than a page
         if (feed) review = await fetchAllPages(`/banking/transactions?bank_account_id=${feed.bank_account_id}&status=unmatched`);
-        BankingPage._ctx = { accountId: id, accountName: reg.account_name, feedId: feed ? feed.bank_account_id : null, kind, lastReconciled: info.last_reconciled || null, className: reg.class_name || '' };
+        // the class chosen, for + Entry to take (#663): one archived is not
+        // in the form's list, so a new entry is not given it
+        const chosen = f.class_id ? classes.find(c => String(c.id) === f.class_id) || null : null;
+        BankingPage._ctx = { accountId: id, accountName: reg.account_name, feedId: feed ? feed.bank_account_id : null, kind, lastReconciled: info.last_reconciled || null, className: reg.class_name || '', classId: chosen && !chosen.is_archived ? chosen.id : null };
 
         let html = `
             <div class="page-header">
@@ -1589,7 +1592,13 @@ const BankingPage = {
             BankingPage._customerNames = new Set(customers.map(c => c.name.toLowerCase()));
         }
         await Nonprofit.loadFunds();
-        const classGroup = await classFormGroupHtml();
+        // a new entry on a register shown for one class takes that class
+        // (#663), so one posted as the class line suggests stays in the
+        // list; an edit keeps its own
+        const ctx = BankingPage._ctx || {};
+        const shownFor = !entry && ctx.accountId === accountId && String(BankingPage._regFilterId) === String(accountId)
+            && BankingPage._regFilter.class_id ? ctx.classId : null;
+        const classGroup = await classFormGroupHtml(shownFor || undefined);
         // a new entry opens on the register's last posted date (#566); an
         // edit fills in its own
         const carried = (!entry && BankingPage._lastDate[accountId]) || '';

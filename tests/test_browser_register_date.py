@@ -611,29 +611,67 @@ def test_a_feed_action_keeps_the_dates_and_the_place_on_the_page(browser):
         page.close()
 
 
+CLASSES = [
+    {"id": 1, "name": "Unassigned", "is_system_default": True},
+    {"id": 2, "name": "Site Prep"},
+    {"id": 3, "name": "Old Job", "is_archived": True},
+]
+
+
 def test_an_entry_the_class_leaves_out_is_said_so(browser):
     """Kept on the register's class, an entry posted with another class
     leaves the list: the toast says so (#663)."""
     ledger = _Ledger(days=3)
     ledger.entries[0]["class_id"] = 2
-    classes = [
-        {"id": 1, "name": "Unassigned", "is_system_default": True},
-        {"id": 2, "name": "Site Prep"},
-    ]
     at = "#/banking/1?class_id=2"
-    page = _ledger_page(browser, ledger, at, classes=classes)
+    page = _ledger_page(browser, ledger, at, classes=CLASSES)
     try:
         page.click("text=+ Entry")
         page.wait_for_selector("#entry-payee")
         page.fill("#modal-body [name='date']", "2026-09-02")
         page.fill("#modal-body [name='amount']", "-9")
         page.select_option("#entry-category", "2")
+        page.select_option("#modal-body [name='class_id']", "1")
         page.click("#modal-body button[type='submit']")
         _toast_with(
             page,
             "This entry is not in class Site Prep, so the register does not show it.",
         )
         assert page.evaluate("() => location.hash") == at
+    finally:
+        page.close()
+
+
+def test_a_new_entry_takes_the_class_the_register_is_shown_for(browser):
+    """+ Entry under a class filter opened on the company's default class,
+    so an entry posted as the class line suggests left the list (#663). It
+    opens on the class chosen, and the entry stays in view; an archived
+    class, which the form does not offer, is not given."""
+    ledger = _Ledger(days=3)
+    ledger.entries[0]["class_id"] = 2
+    at = "#/banking/1?class_id=2"
+    page = _ledger_page(browser, ledger, at, classes=CLASSES)
+    try:
+        page.click("text=+ Entry")
+        page.wait_for_selector("#entry-payee")
+        assert page.input_value("#modal-body [name='class_id']") == "2"
+        page.fill("#modal-body [name='date']", "2026-09-02")
+        page.fill("#modal-body [name='amount']", "-9")
+        page.select_option("#entry-category", "2")
+        page.click("#modal-body button[type='submit']")
+        _toast_with(page, "Entry posted")
+        new = ledger.entries[-1]["transaction_id"]
+        assert ledger.entries[-1]["class_id"] == 2
+        page.wait_for_function(IN_VIEW, arg=new)
+        assert (
+            page.locator("#toast-container .toast", has_text="not in class").count()
+            == 0
+        )
+
+        _visit(page, "#/banking/1?class_id=3", "#reg-quick-entry-off")
+        page.click("text=+ Entry")
+        page.wait_for_selector("#entry-payee")
+        assert page.input_value("#modal-body [name='class_id']") == "1"
     finally:
         page.close()
 
