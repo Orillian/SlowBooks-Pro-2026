@@ -143,11 +143,11 @@ def test_the_register_shows_the_name_the_num_and_the_memo(
     check = next(t for t in _imported(db_session) if t.reference == "1001")
     assert check.description == "Office Depot"
     assert check.source_ref == "Check 1001 · 2024-01-08 · Office Depot"
-    # QuickBooks' check numbers are the account's: the next one follows them,
-    # and the duplicate check number warning knows them
+    # the duplicate check number warning knows QuickBooks' check numbers;
+    # the next check number does not follow them
     from app.services.check_numbers import next_check_number, uses_of
 
-    assert next_check_number(db_session, checking.id) == "1003"
+    assert next_check_number(db_session, checking.id) == "1001"
     assert [u["payee"] for u in uses_of(db_session, checking.id, "1001")] == [
         "Office Depot"
     ]

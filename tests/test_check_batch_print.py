@@ -416,3 +416,43 @@ def test_pay_bills_opens_the_list_with_the_checks_it_just_wrote_ticked():
     assert "written.push(done.id)" in pay
     assert "BillsPage.showPrintChecks(fromId, written)" in pay
     assert "showPrintChecks(fromId)" not in pay
+
+
+def test_a_quickbooks_num_is_not_the_next_checks(
+    client, db_session, seed_accounts, vendor
+):
+    """A QuickBooks Desktop ledger import keeps QuickBooks' Num as the
+    reference (#663), and one long Num put the next check in the millions.
+    The next check follows the checks written here."""
+    from datetime import date
+    from decimal import Decimal
+
+    from app.services.accounting import create_journal_entry
+
+    def imported(num):
+        create_journal_entry(
+            db_session,
+            date(2026, 8, 3),
+            "Harbor Supply",
+            [
+                {
+                    "account_id": seed_accounts["6000"].id,
+                    "debit": Decimal("40"),
+                    "credit": Decimal("0"),
+                },
+                {
+                    "account_id": _bank(seed_accounts),
+                    "debit": Decimal("0"),
+                    "credit": Decimal("40"),
+                },
+            ],
+            source_type="qb_ledger_import",
+            reference=num,
+        )
+        db_session.commit()
+
+    imported("20240108123456")
+    assert _list(client, _bank(seed_accounts))["next_check_number"] == "1001"
+    _pay(client, seed_accounts, vendor, 50.0, check_number="1040")
+    imported("5001")
+    assert _list(client, _bank(seed_accounts))["next_check_number"] == "1041"

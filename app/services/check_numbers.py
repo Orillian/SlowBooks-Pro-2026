@@ -203,8 +203,13 @@ def unprinted_payments(db: Session, account_id: int) -> list[BillPayment]:
 
 def next_check_number(db: Session, account_id: int) -> str:
     """One past the highest numeric check number on `account_id` (registers,
-    expenses and bill payments alike); "1001" for an account with none."""
+    expenses and bill payments alike); "1001" for an account with none.
+
+    A QuickBooks Desktop ledger import's numbers are left out (#663): its
+    reference is whatever QuickBooks printed in Num, and one long number
+    would put the next check in the millions. uses_of still finds them."""
     from app.services.bank_register import voided_transaction_ids
+    from app.services.entry_text import QB_LEDGER_SOURCE
 
     highest = 0
     refs = (
@@ -217,6 +222,8 @@ def next_check_number(db: Session, account_id: int) -> str:
     )
     voided = voided_transaction_ids(db, [t.id for t in refs])
     for t in refs:
+        if t.source_type == QB_LEDGER_SOURCE:
+            continue
         n = _number(t.reference)
         if n and t.id not in voided and not (t.source_type or "").endswith("_void"):
             highest = max(highest, int(n))

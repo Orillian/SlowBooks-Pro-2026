@@ -329,3 +329,40 @@ def test_settings_draws_named_boxes_saved_as_true_or_false():
         assert f"SettingsPage._warnBox(s, '{key}'" in src
     assert 'input[type="checkbox"][data-bool][name]' in src
     assert "SettingsPage._warnDays(s, 'warn_date_past_days'" in src
+
+
+def test_a_quickbooks_num_is_asked_about(client, db_session, seed_accounts):
+    """A QuickBooks Desktop ledger import's Num stays a used number (#663),
+    though the next check number does not follow it."""
+    from datetime import date
+    from decimal import Decimal
+
+    from app.services.accounting import create_journal_entry
+
+    create_journal_entry(
+        db_session,
+        date(2026, 9, 2),
+        "Gas Co",
+        [
+            {
+                "account_id": seed_accounts["6100"].id,
+                "debit": Decimal("12.50"),
+                "credit": Decimal("0"),
+            },
+            {
+                "account_id": seed_accounts["1000"].id,
+                "debit": Decimal("0"),
+                "credit": Decimal("12.50"),
+            },
+        ],
+        source_type="qb_ledger_import",
+        reference="5001",
+    )
+    db_session.commit()
+    _turn_on(client)
+    r = _entry(client, seed_accounts, "5001")
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["uses"] == [
+        {"date": "2026-09-02", "payee": "Gas Co", "amount": "12.50"}
+    ]
+    assert _entry(client, seed_accounts, "5001", query=OVERRIDE).status_code == 201
