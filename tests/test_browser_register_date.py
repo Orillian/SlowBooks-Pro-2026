@@ -8,6 +8,7 @@ The API is stubbed; the page is the real one (tests/test_browser_ui.py's
 fixtures)."""
 
 import datetime as dt
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -306,6 +307,298 @@ def test_a_post_from_the_row_keeps_the_dates_and_says_when_it_falls_outside(brow
             " so the register does not show it.",
         )
         assert posted[-1]["date"] == "2026-11-02"
+        assert page.evaluate("() => location.hash") == at
+    finally:
+        page.close()
+
+
+# ── #663: a save, a void or a feed action keeps the dates and the place ──
+
+
+class _Ledger:
+    """A long register for the stubs to answer from: an entry a day from
+    Sep 1, filtered by the address's dates and class as the service filters
+    them, with the posts, edits, voids and the feed's excludes applied."""
+
+    def __init__(self, days=60):
+        start = dt.date(2026, 9, 1)
+        self.entries = [
+            self._entry(100 + i, (start + dt.timedelta(days=i)).isoformat())
+            for i in range(days)
+        ]
+        self.review = []
+
+    @staticmethod
+    def _entry(txn, date, payee=None, class_id=None):
+        payee = payee or f"Payee {txn}"
+        return {
+            **OCT_ENTRY,
+            "line_id": txn,
+            "transaction_id": txn,
+            "date": date,
+            "payee": payee,
+            "description": payee,
+            "class_id": class_id,
+        }
+
+    def _by_id(self, txn):
+        return next(e for e in self.entries if e["transaction_id"] == txn)
+
+    def register(self, route):
+        q = parse_qs(urlsplit(route.request.url).query)
+        start, end, cls = (
+            q.get(k, [""])[0] for k in ("start_date", "end_date", "class_id")
+        )
+        rows = sorted(
+            (
+                e
+                for e in self.entries
+                if (not start or e["date"] >= start)
+                and (not end or e["date"] <= end)
+                and (not cls or str(e["class_id"]) == cls)
+            ),
+            key=lambda e: (e["date"], e["transaction_id"]),
+        )
+        route.fulfill(
+            json={
+                **REGISTER,
+                "entries": rows,
+                "class_name": "Site Prep" if cls else None,
+            }
+        )
+
+    def transactions(self, route):
+        req = route.request
+        path = urlsplit(req.url).path
+        if req.method == "POST" and path.endswith("/api/banking/transactions"):
+            body = req.post_data_json
+            txn = 900 + len(self.entries)
+            self.entries.append(
+                self._entry(txn, body["date"], body.get("payee"), body.get("class_id"))
+            )
+            return route.fulfill(status=201, json={"id": txn, "date": body["date"]})
+        if req.method == "POST" and path.endswith("/exclude"):
+            line = int(path.split("/")[-2])
+            self.review = [t for t in self.review if t["id"] != line]
+            return route.fulfill(json={"status": "excluded"})
+        # the review queue, a page at a time (fetchAllPages)
+        skip = int(parse_qs(urlsplit(req.url).query).get("skip", ["0"])[0])
+        route.fulfill(json=[] if skip else self.review)
+
+    def entries_route(self, route):
+        req = route.request
+        parts = urlsplit(req.url).path.rstrip("/").split("/")
+        if parts[-1] == "void":
+            e = self._by_id(int(parts[-2]))
+            e.update(voided=True, voidable=False, editable=False)
+            return route.fulfill(json={"id": e["transaction_id"], "status": "void"})
+        e = self._by_id(int(parts[-1]))
+        if req.method == "PUT":
+            body = req.post_data_json
+            e.update(date=body["date"], payee=body.get("payee") or e["payee"])
+            return route.fulfill(json={"id": e["transaction_id"], "date": e["date"]})
+        route.fulfill(
+            json={
+                "id": e["transaction_id"],
+                "date": e["date"],
+                "amount": -25.0,
+                "payee": e["payee"],
+                "reference": "",
+                "description": "",
+                "category_account_id": 2,
+                "class_id": None,
+                "splits": None,
+                "gift_letters": [],
+            }
+        )
+
+
+def _ledger_page(browser, ledger, at, classes=None, feed=False):
+    page = _open(browser, 1280, 800, "#/")
+    page.route("**/api/banking/check-register*", ledger.register)
+    page.route("**/api/accounts*", lambda r: r.fulfill(json=CHART))
+    page.route("**/api/banking/transactions**", ledger.transactions)
+    page.route("**/api/banking/entries/**", ledger.entries_route)
+    if classes is not None:
+        page.route("**/api/classes*", lambda r: r.fulfill(json=classes))
+    if feed:
+        page.route(
+            "**/api/banking/overview",
+            lambda r: r.fulfill(
+                json=[{"account_id": 1, "feed": {"bank_account_id": 5, "name": "Feed"}}]
+            ),
+        )
+    page.on("dialog", lambda d: d.accept())
+    page.goto(page.url.split("#")[0] + at)
+    page.wait_for_selector("#page-content tr[data-txn]")
+    return page
+
+
+IN_VIEW = """(txn) => {
+    const row = document.querySelector(`#page-content tr[data-txn="${txn}"]`);
+    if (!row) return false;
+    const box = document.getElementById('content').getBoundingClientRect();
+    const r = row.getBoundingClientRect();
+    return r.top >= box.top && r.bottom <= box.bottom;
+}"""
+SCROLLED = "() => document.getElementById('content').scrollTop"
+
+
+def _scroll_to(page, txn):
+    page.evaluate(
+        '(txn) => document.querySelector(`#page-content tr[data-txn="${txn}"]`)'
+        ".scrollIntoView({ block: 'center' })",
+        txn,
+    )
+    return page.evaluate(SCROLLED)
+
+
+def test_a_new_entry_keeps_the_dates_and_comes_into_view(browser):
+    """+ Entry went back to the register's bare address: the dates went,
+    and the page stayed at the top, the entry somewhere below (#663). The
+    register comes back on its dates with the entry's row in view; one
+    dated past To is said so, and the page stays where it was."""
+    ledger = _Ledger()
+    at = "#/banking/1?start_date=2026-09-01"
+    page = _ledger_page(browser, ledger, at)
+    try:
+        assert page.evaluate(SCROLLED) == 0
+        page.click("text=+ Entry")
+        page.wait_for_selector("#entry-payee")
+        page.fill("#modal-body [name='date']", "2026-10-20")
+        page.fill("#modal-body [name='amount']", "-40")
+        page.fill("#entry-payee", "Harbor Fuel")
+        page.select_option("#entry-category", "2")
+        page.click("#modal-body button[type='submit']")
+        _toast_with(page, "Entry posted")
+        new = ledger.entries[-1]["transaction_id"]
+        page.wait_for_function(IN_VIEW, arg=new)
+        assert page.evaluate(SCROLLED) > 0
+        assert page.evaluate("() => location.hash") == at
+        assert page.input_value("#reg-start") == "2026-09-01"
+
+        # dated past the To date: said, and the page stays where it was
+        at = "#/banking/1?start_date=2026-09-01&end_date=2026-09-30"
+        _visit(page, at, "#reg-end[value='2026-09-30']")
+        page.click("text=+ Entry")
+        page.wait_for_selector("#entry-payee")
+        page.fill("#modal-body [name='date']", "2026-10-15")
+        page.fill("#modal-body [name='amount']", "-12")
+        page.select_option("#entry-category", "2")
+        page.click("#modal-body button[type='submit']")
+        _toast_with(
+            page,
+            "Entry posted. Its date, Oct 15, 2026, is after the To date,"
+            " so the register does not show it.",
+        )
+        page.wait_for_selector("#modal-overlay.hidden", state="attached")
+        assert page.evaluate("() => location.hash") == at
+        assert page.evaluate(SCROLLED) == 0
+    finally:
+        page.close()
+
+
+def test_an_edit_keeps_the_dates_and_brings_the_entry_into_view(browser):
+    """An edit's Save went back to the bare address too (#663). The
+    register keeps its dates, and the entry, moved to an earlier day, is
+    brought into view where it now sits."""
+    ledger = _Ledger()
+    at = "#/banking/1?start_date=2026-09-01&end_date=2026-10-31"
+    page = _ledger_page(browser, ledger, at)
+    try:
+        assert _scroll_to(page, 150) > 0
+        page.locator('tr[data-txn="150"] button', has_text="Edit").click()
+        page.wait_for_function(
+            "() => document.getElementById('modal-title').textContent === 'Edit entry'"
+        )
+        page.fill("#modal-body [name='date']", "2026-09-03")
+        page.click("#modal-body button[type='submit']")
+        _toast_with(page, "Entry saved")
+        page.wait_for_function(
+            "() => (document.querySelector('tr[data-txn=\"150\"]') || {}).textContent"
+            " && document.querySelector('tr[data-txn=\"150\"]').textContent.includes('Sep 3, 2026')"
+        )
+        page.wait_for_function(IN_VIEW, arg=150)
+        assert page.evaluate("() => location.hash") == at
+    finally:
+        page.close()
+
+
+def test_a_void_keeps_the_dates_and_the_place_on_the_page(browser):
+    ledger = _Ledger()
+    at = "#/banking/1?start_date=2026-09-01"
+    page = _ledger_page(browser, ledger, at)
+    try:
+        top = _scroll_to(page, 140)
+        assert top > 0
+        page.locator('tr[data-txn="140"] button', has_text="Void").click()
+        _toast_with(page, "Voided")
+        page.wait_for_function(
+            "() => !document.querySelector('tr[data-txn=\"140\"] button[data-destructive]')"
+        )
+        assert page.evaluate("() => location.hash") == at
+        assert abs(page.evaluate(SCROLLED) - top) <= 1
+    finally:
+        page.close()
+
+
+def test_a_feed_action_keeps_the_dates_and_the_place_on_the_page(browser):
+    """The feed's Add, Payout, Exclude, Match and the rest redrew the
+    register at its bare address (#663): they keep its dates, and the page
+    stays where it was."""
+    ledger = _Ledger()
+    ledger.review = [
+        {
+            "id": 70 + i,
+            "date": "2026-10-01",
+            "payee": f"Statement line {i}",
+            "description": "",
+            "amount": -5.0,
+        }
+        for i in range(20)
+    ]
+    at = "#/banking/1?start_date=2026-09-15"
+    page = _ledger_page(browser, ledger, at, feed=True)
+    try:
+        page.wait_for_selector("text=Statement line 12")
+        top = page.evaluate(
+            "() => { const box = document.getElementById('content'); box.scrollTop = 300;"
+            " return box.scrollTop; }"
+        )
+        assert top == 300
+        row = page.locator("tr", has_text="Statement line 12")
+        row.locator("button", has_text="Exclude").click()
+        page.wait_for_function(
+            "() => !document.body.textContent.includes('Statement line 12')"
+        )
+        assert page.evaluate("() => location.hash") == at
+        assert abs(page.evaluate(SCROLLED) - top) <= 1
+    finally:
+        page.close()
+
+
+def test_an_entry_the_class_leaves_out_is_said_so(browser):
+    """Kept on the register's class, an entry posted with another class
+    leaves the list: the toast says so (#663)."""
+    ledger = _Ledger(days=3)
+    ledger.entries[0]["class_id"] = 2
+    classes = [
+        {"id": 1, "name": "Unassigned", "is_system_default": True},
+        {"id": 2, "name": "Site Prep"},
+    ]
+    at = "#/banking/1?class_id=2"
+    page = _ledger_page(browser, ledger, at, classes=classes)
+    try:
+        page.click("text=+ Entry")
+        page.wait_for_selector("#entry-payee")
+        page.fill("#modal-body [name='date']", "2026-09-02")
+        page.fill("#modal-body [name='amount']", "-9")
+        page.select_option("#entry-category", "2")
+        page.click("#modal-body button[type='submit']")
+        _toast_with(
+            page,
+            "This entry is not in class Site Prep, so the register does not show it.",
+        )
         assert page.evaluate("() => location.hash") == at
     finally:
         page.close()

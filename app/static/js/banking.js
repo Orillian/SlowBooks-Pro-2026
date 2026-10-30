@@ -628,6 +628,7 @@ const BankingPage = {
     // through them) and sent to the service, which computes the balance
     // brought forward under the same class test.
     _regFilter: { start_date: '', end_date: '', class_id: '' },
+    _regFilterId: null,  // the register it is for
 
     _regFilterFrom(query) {
         const q = query || {};
@@ -639,7 +640,8 @@ const BankingPage = {
     },
 
     _regUrl(id) {
-        const f = BankingPage._regFilter;
+        // one register's filter is not carried to another
+        const f = String(BankingPage._regFilterId) === String(id) ? BankingPage._regFilter : {};
         const q = ['start_date', 'end_date', 'class_id'].filter(k => f[k]).map(k => `${k}=${encodeURIComponent(f[k])}`).join('&');
         return `#/banking/${id}${q ? `?${q}` : ''}`;
     },
@@ -665,6 +667,7 @@ const BankingPage = {
             return;
         }
         BankingPage._regFilter = next;
+        BankingPage._regFilterId = id;
         const url = BankingPage._regUrl(id);
         if ((location.hash || '#/') !== url) history.replaceState(history.state, '', url);
         App.navigate(url);
@@ -674,10 +677,43 @@ const BankingPage = {
         BankingPage.regFilterChanged(id, { start_date: '', end_date: '', class_id: '' });
     },
 
+    // Back to the register after a change made on it (#663): on its own
+    // dates and class, which the bare address dropped, with the page where
+    // it was, or, given an entry, with that entry's row in view.
+    async _backToRegister(accountId, { txnId = null, top = null } = {}) {
+        const box = document.getElementById('content');
+        const at = top === null ? (box ? box.scrollTop : 0) : top;
+        await BankingPage.go(BankingPage._regUrl(accountId));
+        const row = txnId ? document.querySelector(`#page-content tr[data-txn="${Number(txnId)}"]`) : null;
+        if (row && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center' });
+        else if (box) box.scrollTop = at;
+        return row;
+    },
+
+    // After + Entry, Edit or Transfer saves on the register: the dialog
+    // closes and the entry comes into view. One the dates leave out was
+    // said with the save's toast; one the class leaves out is said here.
+    async _showSaved(accountId, txnId, outside) {
+        const box = document.getElementById('content');
+        const top = box ? box.scrollTop : 0;
+        closeModal();
+        const row = await BankingPage._backToRegister(accountId, { txnId, top });
+        const cls = (BankingPage._ctx || {}).className;
+        if (!row && !outside && cls && BankingPage._regFilter.class_id && document.getElementById('reg-class')) {
+            toast(`This entry is not in ${T('class').toLowerCase()} ${cls}, so the register does not show it.`);
+        }
+    },
+
+    // Whether the page under any dialog open is this account's register.
+    _onRegister(id) {
+        return App.parseHash(location.hash).path === `/banking/${id}`;
+    },
+
     async renderRegister(accountId, query) {
         const id = parseInt(accountId, 10);
         const f = BankingPage._regFilterFrom(query);
         BankingPage._regFilter = f;
+        BankingPage._regFilterId = id;
         // a date the address carried that was refused (not one, From after
         // To) is not kept on the bar: the address reads the dates in use, so
         // a reload does not toast again (NEW-35 review)
@@ -707,7 +743,7 @@ const BankingPage = {
         let review = [];
         // the whole queue: a year fetched from a feed can be more than a page
         if (feed) review = await fetchAllPages(`/banking/transactions?bank_account_id=${feed.bank_account_id}&status=unmatched`);
-        BankingPage._ctx = { accountId: id, accountName: reg.account_name, feedId: feed ? feed.bank_account_id : null, kind, lastReconciled: info.last_reconciled || null };
+        BankingPage._ctx = { accountId: id, accountName: reg.account_name, feedId: feed ? feed.bank_account_id : null, kind, lastReconciled: info.last_reconciled || null, className: reg.class_name || '' };
 
         let html = `
             <div class="page-header">
@@ -766,7 +802,7 @@ const BankingPage = {
                 </tr></thead><tbody></tbody>${quickRow}</table></div>`;
         } else {
             const rows = reg.entries.slice().map(e => `
-                <tr style="${e.voided ? 'color:var(--gray-400); text-decoration:line-through;' : ''}">
+                <tr data-txn="${e.transaction_id}" style="${e.voided ? 'color:var(--gray-400); text-decoration:line-through;' : ''}">
                     <td>${formatDate(e.date)}</td>
                     <td>${escapeHtml(e.payee || '')}</td>
                     <td>${BankingPage._memoCell(e)}</td>
@@ -899,7 +935,7 @@ const BankingPage = {
         try {
             const added = await API.post(`/banking/transactions/${lineId}/add`, body);
             toast(added.vendor_name ? `Added to the books for ${added.vendor_name}` : 'Added to the books');
-            BankingPage.go(`#/banking/${accountId}`);
+            BankingPage._backToRegister(accountId);
             BankingPage._offerFeedVendors([added]);
         } catch (err) { toast(err.message, 'error'); }
     },
@@ -969,7 +1005,7 @@ const BankingPage = {
             });
             closeModal();
             toast('Payout recorded');
-            BankingPage.go(`#/banking/${accountId}`);
+            BankingPage._backToRegister(accountId);
         } catch (err) { toast(err.message, 'error'); }
     },
 
@@ -1009,21 +1045,21 @@ const BankingPage = {
     async excludeLine(lineId, accountId) {
         try {
             await API.post(`/banking/transactions/${lineId}/exclude`);
-            BankingPage.go(`#/banking/${accountId}`);
+            BankingPage._backToRegister(accountId);
         } catch (err) { toast(err.message, 'error'); }
     },
 
     async restoreLine(lineId, accountId) {
         try {
             await API.post(`/banking/transactions/${lineId}/restore`);
-            BankingPage.go(`#/banking/${accountId}`);
+            BankingPage._backToRegister(accountId);
         } catch (err) { toast(err.message, 'error'); }
     },
 
     async unmatchLine(lineId, accountId) {
         try {
             await API.post(`/banking/transactions/${lineId}/unmatch`);
-            BankingPage.go(`#/banking/${accountId}`);
+            BankingPage._backToRegister(accountId);
         } catch (err) { toast(err.message, 'error'); }
     },
 
@@ -1074,7 +1110,7 @@ const BankingPage = {
             const lines = BankingPage._reviewLines || {};
             const r = await API.post(`/banking/accounts/${feedId}/feed/add-all`);
             toast(`Added ${r.added}${r.skipped.length ? `, skipped ${r.skipped.length}: ${r.skipped[0].reason}` : ''}`);
-            BankingPage.go(`#/banking/${accountId}`);
+            BankingPage._backToRegister(accountId);
             BankingPage._offerFeedVendors((r.without_vendor || []).map(id => lines[id]).filter(Boolean));
         } catch (err) { toast(err.message, 'error'); }
     },
@@ -1083,7 +1119,7 @@ const BankingPage = {
         try {
             const r = await API.post(`/banking/accounts/${feedId}/feed/auto-match`);
             toast(`Matched ${r.matched} statement line${r.matched === 1 ? '' : 's'}`);
-            BankingPage.go(`#/banking/${accountId}`);
+            BankingPage._backToRegister(accountId);
         } catch (err) { toast(err.message, 'error'); }
     },
 
@@ -1108,7 +1144,7 @@ const BankingPage = {
             await API.post(`/banking/transactions/${lineId}/match`, { line_id: ledgerLineId });
             toast('Matched');
             closeModal();
-            BankingPage.go(`#/banking/${accountId}`);
+            BankingPage._backToRegister(accountId);
         } catch (err) { toast(err.message, 'error'); }
     },
 
@@ -1120,7 +1156,7 @@ const BankingPage = {
         try {
             await API.post(path);
             toast('Voided');
-            BankingPage.go(`#/banking/${accountId}`);
+            BankingPage._backToRegister(accountId);
         } catch (err) { toast(err.message, 'error'); }
     },
 
@@ -1708,10 +1744,10 @@ const BankingPage = {
                 form.check_number || null);
             if (!posted) return;
             BankingPage._lastDate[accountId] = data.date;
-            toastPosted('Entry posted');
+            const outside = BankingPage._outsideFilter(data.date);
+            toastPosted(outside ? `Entry posted. ${outside}` : 'Entry posted');
             BankingPage.payeeTyped(data.payee, parseFloat(data.amount) > 0, 'qe-payee');
-            closeModal();
-            BankingPage.go(`#/banking/${accountId}`);
+            await BankingPage._showSaved(accountId, posted.id, outside);
         } catch (err) { toast(err.message, 'error'); }
     },
 
@@ -1728,9 +1764,10 @@ const BankingPage = {
                 q => API.put(`/banking/entries/${entryId}`, data, q ? { query: q } : undefined),
                 (form && form.check_number) || null);
             if (!saved) return;
-            toastPosted(saved.note ? `Entry saved. ${saved.note}` : 'Entry saved');
-            closeModal();
-            BankingPage.go(`#/banking/${accountId}`);
+            const outside = BankingPage._outsideFilter(data.date);
+            const said = [saved.note, outside].filter(Boolean).join(' ');
+            toastPosted(said ? `Entry saved. ${said}` : 'Entry saved');
+            await BankingPage._showSaved(accountId, entryId, outside);
         } catch (err) {
             if (err.status === 409 && err.detail && err.detail.code === 'reconciled' && !data.confirm_reconciled) {
                 BankingPage._askReconciled(entryId, accountId, err.detail.message);
@@ -1972,7 +2009,10 @@ const BankingPage = {
                 memo: form.memo.value || null,
                 reference: form.reference.value || null,
             });
-            toastPosted('Transfer posted');
+            const here = BankingPage._onRegister(t.from_account_id);
+            const outside = here ? BankingPage._outsideFilter(form.date.value) : '';
+            toastPosted(outside ? `Transfer posted. ${outside}` : 'Transfer posted');
+            if (here) { await BankingPage._showSaved(t.from_account_id, t.id, outside); return; }
             closeModal();
             BankingPage.go(`#/banking/${t.from_account_id}`);
         } catch (err) { toast(err.message, 'error'); }
@@ -2121,7 +2161,7 @@ const BankingPage = {
             <div class="page-header">
                 <h2>Reconcile — statement of ${formatDate(data.statement_date)}</h2>
                 <div class="btn-group">
-                    <button class="btn btn-secondary" onclick="BankingPage.go('#/banking/${data.account_id}')">Later</button>
+                    <button class="btn btn-secondary" onclick="BankingPage.go(BankingPage._regUrl(${data.account_id}))">Later</button>
                     <button class="btn btn-secondary" onclick="BankingPage.abandonReconcile(${reconId}, ${data.account_id})">Abandon</button>
                     <button class="btn btn-primary" id="recon-finish-btn" onclick="BankingPage.finishReconcile(${reconId}, ${data.account_id})">Finish Reconciliation</button>
                 </div>
@@ -2242,7 +2282,7 @@ const BankingPage = {
             if (!confirm('Mark this reconciliation as complete? Cleared lines are locked.')) return;
             await API.post(`/banking/reconciliations/${reconId}/complete`);
             toast('Reconciliation completed');
-            BankingPage.go(`#/banking/${accountId}`);
+            BankingPage.go(BankingPage._regUrl(accountId));
             BankingPage.showReconReport(reconId);
         } catch (err) {
             if (msg) msg.textContent = err.message;
@@ -2320,7 +2360,7 @@ const BankingPage = {
         if (!confirm('Abandon this reconciliation? Ticks are kept.')) return;
         try {
             await API.del(`/banking/reconciliations/${reconId}`);
-            BankingPage.go(`#/banking/${accountId}`);
+            BankingPage.go(BankingPage._regUrl(accountId));
         } catch (err) { toast(err.message, 'error'); }
     },
 
@@ -2504,7 +2544,7 @@ const BankingPage = {
             const data = await resp.json();
             toast(`Imported ${data.imported} (${data.skipped} duplicates skipped, ${data.matched || 0} matched to the books)`);
             closeModal();
-            BankingPage.go(`#/banking/${accountId}`);
+            BankingPage._backToRegister(accountId);
         } catch (err) {
             toast(err.message, 'error');
         } finally {

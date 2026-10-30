@@ -68,7 +68,7 @@ _POSTINGS = {
     "deposits.js": "toastPosted(`Deposited ${formatCurrency(total)}`)",
     "expenses.js": "toastPosted('Expense recorded')",
     "journal.js": "'Adjusting entry created' : 'Journal entry created')",
-    "banking.js": "toastPosted('Transfer posted')",
+    "banking.js": "toastPosted(outside ? `Transfer posted. ${outside}` : 'Transfer posted')",
     "payroll.js": "toastPosted('Payroll processed')",
     "credit_memos.js": "toastPosted('Credit memo created')",
     "vendor_credits.js": "toastPosted('Vendor credit created')",
@@ -90,15 +90,14 @@ def test_the_posting_paths_ring_and_the_rest_stay_silent():
     assert "toastPosted(form.is_adjusting" in (js / "journal.js").read_text(
         encoding="utf-8"
     )
-    # the register's quick row and its entry form; the row's says in the
-    # same toast when the entry is dated outside the register's dates (#663)
+    # the register's quick row and its entry form, each saying in the same
+    # toast when the entry is dated outside the register's dates (#663)
     banking = (js / "banking.js").read_text(encoding="utf-8")
-    assert banking.count("toastPosted('Entry posted')") == 1
     assert (
         banking.count(
             "toastPosted(outside ? `Entry posted. ${outside}` : 'Entry posted')"
         )
-        == 1
+        == 2
     )
     for name, call in _SILENT.items():
         src = (js / name).read_text(encoding="utf-8")

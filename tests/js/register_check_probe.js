@@ -70,7 +70,7 @@ const buttons = (html) => (html.match(/<button[^>]*>[^<]*<\/button>/g) || []).ma
 (async () => {
   const out = { register: {} };
   const reg = await ctx.BankingPage.renderRegister('5');
-  for (const tr of reg.match(/<tr style="[^"]*">[\s\S]*?<\/tr>/g) || []) {
+  for (const tr of reg.match(/<tr data-txn="\d+" style="[^"]*">[\s\S]*?<\/tr>/g) || []) {
     const id = (tr.match(/transaction_id=(\d+)|voidEntry\('[a-z_]+', (\d+)/) || []);
     const cells = tr.match(/<td[^>]*>[\s\S]*?<\/td>/g) || [];
     const last = cells[cells.length - 1] || '';
