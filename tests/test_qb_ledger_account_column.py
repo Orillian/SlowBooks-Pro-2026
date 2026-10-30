@@ -54,6 +54,8 @@ def report(checking, income, extra_account, title=True):
             "Account": income,
         },
         {"": "Total " + income, "Credit": "100.00", "Balance": "-100.00"},
+        # the report's own TOTAL, as QuickBooks closes it (#663)
+        {"": "TOTAL", "Debit": "100.00", "Credit": "100.00", "Balance": "0.00"},
     ]
     out = io.StringIO()
     if title:

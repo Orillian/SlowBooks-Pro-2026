@@ -74,7 +74,9 @@ def _variant(*swaps) -> bytes:
 
 
 # Check 1002's rent line 10.00 over its bank line, with the Rent section's
-# own total, so the section adds up and the check does not balance
+# own total and the report's TOTAL saying so (as a report filtered to some
+# accounts prints them), so every total adds up and the check does not
+# balance
 UNBALANCED = _variant(
     (
         'Operating Checking 4321,,"1,000.00",,,,',
@@ -83,6 +85,10 @@ UNBALANCED = _variant(
     (
         ',Total Rent,,,,,,,,,,,,,,,,,,,,"1,000.00"',
         ',Total Rent,,,,,,,,,,,,,,,,,,,,"1,010.00"',
+    ),
+    (
+        'TOTAL,,,,,,,,,,,,,,,,,,,,,"3,205.00",,"3,205.00",,,,0.00',
+        'TOTAL,,,,,,,,,,,,,,,,,,,,,"3,215.00",,"3,205.00",,,,10.00',
     ),
 )
 # the Rent section's printed total off from its lines: edited, or cut

@@ -36,6 +36,7 @@ def _ledger_with_one_sided_checks(n):
     rows.append(
         f",Total Operating Checking 4321,,,,,,,,,,,,,,,,,,,,0.00,,{n * 100:.2f},,,,-{n * 100:.2f}"
     )
+    rows.append(f"TOTAL,,,,,,,,,,,,,,,,,,,,,0.00,,{n * 100:.2f},,,,-{n * 100:.2f}")
     return ("\n".join(rows) + "\n").encode("utf-8")
 
 

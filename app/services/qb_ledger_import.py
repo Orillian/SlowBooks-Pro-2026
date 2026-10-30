@@ -142,14 +142,26 @@ def parse_ledger(rows: list[list[str]], header_at: int, cols: dict):
     headings above it ("Parent:Child"). `errors` refuse the file (rows with
     no account above them); `cut` says where it looks cut short or edited:
     the sections whose lines do not add up to QuickBooks' total, the rows
-    that could not be read, and the section it ends in, before that
-    section's Total line."""
+    that could not be read, the section it ends in (before that section's
+    Total line), the section whose Total line it ends after, with no TOTAL
+    row for the report, and a TOTAL row the lines do not add up to."""
     first = cols["Type"]  # the label columns are the ones before Type
     lines: list[dict] = []
     errors: list[str] = []
     notes: list[str] = []
-    cut: dict = {"sections": [], "unreadable": [], "ends_in": None}
-    totals = 0
+    cut: dict = {
+        "sections": [],
+        "unreadable": [],
+        "ends_in": None,
+        "no_total": None,
+        "grand": None,
+    }
+    # the report's TOTAL row: whether it was there, what it says, and what
+    # every line read comes to
+    grand_seen = False
+    grand_total = None
+    every = [Decimal("0"), Decimal("0")]
+    last_closed = None
     # each open section: (depth, name, [debit, credit] of the lines under it
     # so far, its sub-accounts' included)
     stack: list[tuple[int, str, list[Decimal]]] = []
@@ -173,7 +185,16 @@ def parse_ledger(rows: list[list[str]], header_at: int, cols: dict):
                 continue
             depth, text = label
             if text.upper() == "TOTAL":
-                continue  # the report's grand total
+                # the report's grand total, read against every line below
+                grand_seen = True
+                try:
+                    grand_total = (
+                        _money(cell(row, "Debit")),
+                        _money(cell(row, "Credit")),
+                    )
+                except Exception:
+                    notes.append(f"Row {n}: the report's TOTAL could not be read")
+                continue
             if text.startswith("Total "):
                 while stack and stack[-1][0] > depth:
                     stack.pop()
@@ -203,7 +224,7 @@ def parse_ledger(rows: list[list[str]], header_at: int, cols: dict):
                                     "total_credit": credit,
                                 }
                             )
-                    totals += 1
+                    last_closed = path
                     stack.pop()
                 continue
             while stack and stack[-1][0] >= depth:
@@ -231,6 +252,8 @@ def parse_ledger(rows: list[list[str]], header_at: int, cols: dict):
         for _, _, sums in stack:
             sums[0] += debit
             sums[1] += credit
+        every[0] += debit
+        every[1] += credit
         lines.append(
             {
                 "path": ":".join(name for _, name, _ in stack),
@@ -244,11 +267,25 @@ def parse_ledger(rows: list[list[str]], header_at: int, cols: dict):
                 "row": n,
             }
         )
-    if stack and totals:
-        # QuickBooks closes every section with its Total line; a file that
-        # stops inside one was cut there (Save as CSV stops at 32,768 rows)
+    # QuickBooks closes every section with its Total line and the report
+    # with its TOTAL row; a file that stops inside a section, or after a
+    # section's Total line with no TOTAL row, was cut there (Save as CSV
+    # stops at 32,768 rows), however early: before any Total line was read,
+    # or right after a top-level one
+    if stack:
         cut["ends_in"] = ":".join(name for _, name, _ in stack)
-    if not (cut["sections"] or cut["unreadable"] or cut["ends_in"]):
+    elif lines and not grand_seen:
+        cut["no_total"] = last_closed
+    if grand_total is not None and tuple(every) != grand_total:
+        # every section adds up, and the report's own total says more: a
+        # section was taken out whole, or the file edited
+        cut["grand"] = {
+            "debit": every[0],
+            "credit": every[1],
+            "total_debit": grand_total[0],
+            "total_credit": grand_total[1],
+        }
+    if not any(cut.values()):
         cut = {}
     return lines, errors, notes, cut
 
@@ -611,17 +648,33 @@ def _cut_off_problem(cut: dict) -> dict:
             f"The file ends inside {cut['ends_in']}, before QuickBooks' Total "
             "line for it."
         )
+    if cut["no_total"]:
+        details.append(
+            f"The file ends after QuickBooks' Total line for {cut['no_total']}, "
+            "without the report's TOTAL row."
+        )
+    grand = cut["grand"]
+    if grand:
+        details.append(
+            f"The file's lines come to {grand['debit']:,.2f} debit and "
+            f"{grand['credit']:,.2f} credit, and QuickBooks' TOTAL row says "
+            f"{grand['total_debit']:,.2f} and {grand['total_credit']:,.2f}."
+        )
     details += cut["unreadable"]
-    return {
+
+    def text(values):
+        return {k: (f"{v:.2f}" if isinstance(v, Decimal) else v) for k, v in values}
+
+    out = {
         "kind": "cut_off",
         "key": "file",
         "details": details,
-        "sections": [
-            {k: (f"{v:.2f}" if isinstance(v, Decimal) else v) for k, v in s.items()}
-            for s in cut["sections"]
-        ],
+        "sections": [text(s.items()) for s in cut["sections"]],
         "text": " ".join(details),
     }
+    if grand:
+        out["total"] = text(grand.items())
+    return out
 
 
 def _unbalanced_problem(txn: dict) -> dict:
