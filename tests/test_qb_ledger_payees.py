@@ -13,13 +13,20 @@ found there.
 
 import csv
 import io
+from datetime import date
 from decimal import Decimal
+from pathlib import Path
+
+import pytest
 
 from app.models.accounts import Account
 from app.models.transactions import Transaction
+from app.services.accounting import create_journal_entry
 from app.services.qb_ledger_import import SOURCE_TYPE
 from tests.test_qb_desktop_ledger import FIXTURE, _chart, _upload
 
+ROOT = Path(__file__).resolve().parents[1]
+REVISION = "4810bd59e481"  # the column, and the rewrite of what was in
 YEAR = {"start_date": "2024-01-01", "end_date": "2024-12-31"}
 
 
@@ -295,3 +302,344 @@ def test_an_entry_imported_before_is_found_by_the_key_in_its_reference(
     overlapping = _upload(client, _report(NEXT_MONTH))
     assert overlapping["journals"] == 1 and overlapping["duplicates_skipped"] == 2
     assert len(_imported(db_session)) == 9
+
+
+# ── the upgrade: what 2.31.1 imported, rewritten once ────────────────────
+
+
+def _alembic():
+    from alembic.config import Config
+
+    cfg = Config(str(ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(ROOT / "migrations"))
+    return cfg
+
+
+def _migration():
+    """The migration, for its rewrite and how it reads an entry back."""
+    from alembic.script import ScriptDirectory
+
+    return ScriptDirectory.from_config(_alembic()).get_revision(REVISION).module
+
+
+def _upgrade(db) -> int:
+    """The migration's rewrite, on this test's books."""
+    rewritten = _migration().rewrite(db.connection())
+    db.expire_all()
+    return rewritten
+
+
+def test_the_upgrade_writes_what_a_new_import_writes(client, db_session, seed_accounts):
+    _chart(db_session)
+    _upload(client, FIXTURE.read_bytes())
+    fresh = [
+        (t.id, t.description, t.reference, t.source_ref) for t in _imported(db_session)
+    ]
+    _as_2311(db_session, FIXTURE.read_bytes())
+    assert [t.source_ref for t in _imported(db_session)] == [None] * 8
+    assert _upgrade(db_session) == 8
+    assert [
+        (t.id, t.description, t.reference, t.source_ref) for t in _imported(db_session)
+    ] == fresh
+
+
+def test_a_second_upload_skips_what_is_in_before_and_after_the_upgrade(
+    client, db_session, seed_accounts
+):
+    _chart(db_session)
+    _upload(client, FIXTURE.read_bytes())
+    _as_2311(db_session, FIXTURE.read_bytes())
+    before = _upload(client, _report(NEXT_MONTH))
+    assert before["journals"] == 1 and before["duplicates_skipped"] == 2
+    # the one posted since is in the new shape already and is left as it is
+    assert _upgrade(db_session) == 8
+    after = _upload(client, _report(NEXT_MONTH))
+    assert after["journals"] == 0 and after["duplicates_skipped"] == 3
+    again = _upload(client, FIXTURE.read_bytes())
+    assert again["journals"] == 0 and again["duplicates_skipped"] == 8
+    assert len(_imported(db_session)) == 9
+    checking = _account(db_session, "Operating Checking 4321")
+    reg = client.get(
+        "/api/banking/check-register", params={"account_id": checking.id}
+    ).json()
+    rows = [(e["payee"], e["reference"], e["description"]) for e in reg["entries"]]
+    assert rows[-2:] == [
+        ("Harbor Properties", "1002", "January rent"),
+        ("Harbor Properties", "1003", "February rent"),
+    ]
+
+
+D = date(2026, 3, 2)
+
+
+def _written(ttype, num, lines, repeat=1, day=D):
+    """What 2.31.1 stored for a journal of `lines`, [(name, memo)]: its
+    description, its key (the reference), its date and its lines' texts."""
+    names = [name for name, _ in lines if name]
+    memos = [memo for _, memo in lines if memo]
+    head = f"{ttype} {num}".strip()
+    description = (
+        head + (f" — {names[0]}" if names else "") + (f": {memos[0]}" if memos else "")
+    )[:200]
+    key = f"{head} · {day:%Y-%m-%d}"
+    if len(set(names)) == 1:
+        key += f" · {names[0]}"
+    if repeat > 1:
+        key += f" #{repeat}"
+    texts = [(memo or name or ttype)[:300] for name, memo in lines]
+    return description, key[:100], day, texts
+
+
+LONG = "Northwind Property Management Group:Building 7 Lobby Renovation Phase 2"
+READ_BACK = [
+    pytest.param(
+        ("Check", "EFT", [("Acme Supply", ""), ("Acme Supply", "memo")]),
+        ("Acme Supply", "EFT"),
+        id="the issue's check",
+    ),
+    pytest.param(
+        (
+            "Check",
+            "2001",
+            [
+                ("Lakeside — North:Dock 4", ""),
+                ("Lakeside — North:Dock 4", "Re: invoice 12 — final"),
+            ],
+        ),
+        ("Lakeside — North:Dock 4", "2001"),
+        id="a job with a dash, a memo with a colon and a dash",
+    ),
+    pytest.param(
+        ("Bill Pmt -Check", "10452", [(LONG, "Retainage: final 10%"), (LONG, "")]),
+        (LONG, "10452"),
+        id="a name the key cut short",
+    ),
+    pytest.param(
+        ("Deposit", "", [("", "Batch: week 9"), ("Ann Lee", ""), ("Bo Chen", "")]),
+        ("Ann Lee", ""),
+        id="two names, neither in the key",
+    ),
+    pytest.param(
+        ("General Journal", "AJE-3", [("", "Accrual: Q4"), ("", "Accrual: Q4")]),
+        ("", "AJE-3"),
+        id="a journal entry with no name",
+    ),
+    pytest.param(
+        ("Transfer", "", [("", ""), ("", "")]),
+        ("", ""),
+        id="no name, number or memo",
+    ),
+    pytest.param(
+        ("Credit Card Charge", "", [("Corner Cafe", "Lunch: crew")] * 2),
+        ("Corner Cafe", ""),
+        id="a type of three words",
+    ),
+    pytest.param(
+        ("Check", "", [("Store #2", "")] * 2),
+        ("Store #2", ""),
+        id="a name that ends like a repeat",
+    ),
+    pytest.param(
+        ("Check", "", [("Store", "")] * 2, 2),
+        ("Store", ""),
+        id="a key that repeated in its file",
+    ),
+    pytest.param(
+        ("Check", "77", [("Smith: Annex", "")] * 2),
+        ("Smith: Annex", "77"),
+        id="a name with a colon and a space",
+    ),
+    pytest.param(
+        ("Discount", "", [("Acme", "x")]),
+        ("Acme", ""),
+        id="a type of one word not on the list",
+    ),
+    pytest.param(
+        ("Check", "5", [("Hale: Annex", "Roof"), ("Hale: Annex", "Annex: Roof")]),
+        ("Hale: Annex", "5"),
+        id="two readings the lines allow, the key holds one",
+    ),
+    pytest.param(
+        ("Check", "1", [(LONG + " West", "")] * 2, 2),
+        (LONG + " West", "1"),
+        id="a repeat number the key cut short",
+    ),
+    pytest.param(
+        ("Check", "3", [("Acme", "Retainage released on the final lien waiver. " * 6)]),
+        ("Acme", "3"),
+        id="a memo the description cut short",
+    ),
+]
+
+
+@pytest.mark.parametrize("journal, expected", READ_BACK)
+def test_what_the_upgrade_reads_back(journal, expected):
+    assert _migration().read_back(*_written(*journal)) == expected
+
+
+LEFT_ALONE = [
+    pytest.param(
+        _written("Funds Moved", "12", [("Acme", "")] * 2),
+        id="a type of two words not on the list",
+    ),
+    pytest.param(
+        ("Office supplies", "Check 9 · 2026-03-02 · Acme", D, ["Acme"]),
+        id="a description the importer did not write",
+    ),
+    pytest.param(
+        ("Check 9 — Acme", "Check 9 · 2026-03-03 · Acme", D, ["Acme"]),
+        id="a key of another day",
+    ),
+    pytest.param(
+        ("Check 9 — Acme: memo", "Check 9 · 2026-03-02 · Zenith", D, ["memo", "Acme"]),
+        id="a name the key does not hold",
+    ),
+    pytest.param(
+        ("Check 9 — Acme: memo", "Check 9 · 2026-03-02 · Acme", D, ["Acme", "other"]),
+        id="a memo on no line",
+    ),
+    pytest.param(
+        _written("Deposit", "", [("", "x: y"), ("A", "y"), ("B", "")]),
+        id="two readings",
+    ),
+    pytest.param(("Acme", "1001", D, ["Acme"]), id="a reference that is no key"),
+]
+
+
+@pytest.mark.parametrize("entry", LEFT_ALONE)
+def test_what_the_upgrade_leaves_alone(entry):
+    assert _migration().read_back(*entry) is None
+
+
+def test_the_upgrade_rewrites_ledger_imports_alone_and_once(db_session, seed_accounts):
+    first, second = (
+        db_session.query(Account).order_by(Account.account_number).limit(2).all()
+    )
+
+    def entry(source_type, description, reference, texts, source_ref=None):
+        return create_journal_entry(
+            db_session,
+            D,
+            description,
+            [
+                {
+                    "account_id": first.id,
+                    "debit": Decimal("10"),
+                    "credit": Decimal("0"),
+                    "description": texts[0],
+                },
+                {
+                    "account_id": second.id,
+                    "debit": Decimal("0"),
+                    "credit": Decimal("10"),
+                    "description": texts[1],
+                },
+            ],
+            source_type=source_type,
+            reference=reference,
+            source_ref=source_ref,
+        ).id
+
+    key = "Check 9 · 2026-03-02 · Acme"
+    old = entry(SOURCE_TYPE, "Check 9 — Acme: Paper", key, ["Acme", "Paper"])
+    unread = entry(
+        SOURCE_TYPE,
+        "Funds Moved 12 — Acme",
+        "Funds Moved 12 · 2026-03-02 · Acme",
+        ["Acme", "Acme"],
+    )
+    typed = entry("manual", "Check 9 — Acme: Paper", key, ["Acme", "Paper"])
+    new = entry(SOURCE_TYPE, "Acme", "9", ["Acme", "Paper"], source_ref=key + " #2")
+    db_session.commit()
+    assert _upgrade(db_session) == 1
+    got = {
+        t.id: (t.description, t.reference, t.source_ref)
+        for t in db_session.query(Transaction)
+    }
+    assert got[old] == ("Acme", "9", key)
+    assert got[unread] == (
+        "Funds Moved 12 — Acme",
+        "Funds Moved 12 · 2026-03-02 · Acme",
+        None,
+    )
+    assert got[typed] == ("Check 9 — Acme: Paper", key, None)
+    assert got[new] == ("Acme", "9", key + " #2")
+    assert _upgrade(db_session) == 0
+
+
+def test_the_migration_rewrites_and_its_downgrade_puts_the_keys_back(tmp_path):
+    import sqlalchemy as sa
+    from alembic import command
+    from alembic.script import ScriptDirectory
+
+    url = "sqlite:///" + (tmp_path / "books.db").as_posix()
+    cfg = _alembic()
+    cfg.attributes["database_url"] = url
+    script = ScriptDirectory.from_config(cfg)
+    assert len(script.get_heads()) == 1
+    before = script.get_revision(REVISION).down_revision
+    command.upgrade(cfg, before)
+    entries = {
+        1: (
+            "Check 1001 — Office Depot: Paper",
+            "Check 1001 · 2024-01-08 · Office Depot",
+        ),
+        2: ("Funds Moved 12 — Acme", "Funds Moved 12 · 2024-01-08 · Acme"),
+    }
+    engine = sa.create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO accounts (id, name, account_type, is_active, is_system, "
+                "balance) VALUES (1, 'Checking', 'ASSET', 1, 0, 0), "
+                "(2, 'Supplies', 'EXPENSE', 1, 0, 0)"
+            )
+        )
+        for txn_id, (description, reference) in entries.items():
+            conn.execute(
+                sa.text(
+                    "INSERT INTO transactions (id, date, description, reference, "
+                    "source_type, is_adjusting) VALUES (:id, '2024-01-08', :d, :r, "
+                    "'qb_ledger_import', 0)"
+                ),
+                {"id": txn_id, "d": description, "r": reference},
+            )
+        conn.execute(
+            sa.text(
+                "INSERT INTO transaction_lines (transaction_id, account_id, debit, "
+                "credit, description, is_billable, cleared) VALUES "
+                "(1, 1, 0, 75, 'Office Depot', 0, 0), (1, 2, 75, 0, 'Paper', 0, 0), "
+                "(2, 1, 0, 5, 'Acme', 0, 0), (2, 2, 5, 0, 'Acme', 0, 0)"
+            )
+        )
+    engine.dispose()
+
+    def stored(*columns):
+        engine = sa.create_engine(url)
+        try:
+            with engine.connect() as conn:
+                return {
+                    row[0]: tuple(row[1:])
+                    for row in conn.execute(
+                        sa.text(f"SELECT id, {', '.join(columns)} FROM transactions")
+                    )
+                }
+        finally:
+            engine.dispose()
+
+    command.upgrade(cfg, REVISION)
+    assert stored("description", "reference", "source_ref") == {
+        1: ("Office Depot", "1001", "Check 1001 · 2024-01-08 · Office Depot"),
+        2: (*entries[2], None),
+    }
+
+    command.downgrade(cfg, before)
+    engine = sa.create_engine(url)
+    assert "source_ref" not in {
+        c["name"] for c in sa.inspect(engine).get_columns("transactions")
+    }
+    engine.dispose()
+    assert stored("description", "reference") == {
+        1: ("Office Depot", "Check 1001 · 2024-01-08 · Office Depot"),
+        2: entries[2],
+    }
