@@ -36,6 +36,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import OrderedDict
 from datetime import datetime
@@ -452,11 +453,35 @@ DIFFERENCE_MEMO = "Difference in the QuickBooks file"
 _UNREAD_ANSWERS = "The answers to the file's problems could not be read."
 
 
+FILE_CHANGED = "The file changed since the list was made; upload it again."
+_NO_FILE = (
+    "The answers do not carry the file_sha256 the list gave for the file; "
+    "upload the file again."
+)
+
+
+def file_sha256(raw: bytes) -> str:
+    """The file a problem list was made for (#663): its answers carry this,
+    and answers made for another file are refused."""
+    return hashlib.sha256(raw).hexdigest()
+
+
+def check_answers_file(answers: dict | None, sha: str) -> None:
+    """Answers are for the file the list was made for, by its sha256: a key
+    alone matched a transaction 10,000.00 off in another file."""
+    if answers is None:
+        return
+    if not answers.get("file_sha256"):
+        raise DataProblem(_NO_FILE)
+    if answers["file_sha256"] != sha:
+        raise DataProblem(FILE_CHANGED)
+
+
 def read_answers(raw) -> dict | None:
     """The person's answers to a file's problems, as the page sends them
-    (#663): {"unbalanced": [import key, ...], "accounts": {path: account
-    type}, "cut_off": true}. None when none were sent (a first upload).
-    A problem the answers do not accept is left out."""
+    (#663): {"file_sha256": the list's, "unbalanced": [import key, ...],
+    "accounts": {path: account type}, "cut_off": true}. None when none were
+    sent (a first upload). A problem the answers do not accept is left out."""
     if raw is None or not str(raw).strip():
         return None
     try:
@@ -467,10 +492,12 @@ def read_answers(raw) -> dict | None:
         raise DataProblem(_UNREAD_ANSWERS)
     keys = data.get("unbalanced") or []
     chosen = data.get("accounts") or {}
+    sha = data.get("file_sha256")
     if (
         not isinstance(keys, list)
         or not all(isinstance(k, str) for k in keys)
         or not isinstance(chosen, dict)
+        or not (sha is None or isinstance(sha, str))
     ):
         raise DataProblem(_UNREAD_ANSWERS)
     offered = {d.value: d for d in ACCOUNT_TYPES}
@@ -482,6 +509,7 @@ def read_answers(raw) -> dict | None:
             )
         types[str(path)] = offered[value]
     return {
+        "file_sha256": sha,
         "unbalanced": set(keys),
         "accounts": types,
         "cut_off": data.get("cut_off") is True,
@@ -684,6 +712,7 @@ def import_ledger_report(
     adjusting_only: bool = False,
     posted_by: str = None,
     answers: dict | None = None,
+    file_sha: str | None = None,
 ) -> dict:
     """``adjusting_only`` (#344): the report is an accountant's adjustments
     — General Journal rows only, refused whole when it holds anything
@@ -692,8 +721,9 @@ def import_ledger_report(
 
     ``answers`` (#663, read_answers): None on a first upload, which posts
     nothing when the file has problems and answers with ``ready``,
-    ``problems`` and ``problem_notes``. Given, what checks out posts with
-    what they accept, and ``accepted`` and ``left_out`` say the rest."""
+    ``problems``, ``problem_notes`` and ``file_sha256`` (``file_sha``, the
+    file's, which the answers carry back). Given, what checks out posts
+    with what they accept, and ``accepted`` and ``left_out`` say the rest."""
     from app.services.iif_import import _find_account
 
     result = {
@@ -771,6 +801,8 @@ def import_ledger_report(
         result["ready"] = sum(1 for t in pending if t["balanced"] and not t["needs"])
         result["problems"] = problems
         result["problem_notes"] = _problem_notes(db, problems)
+        if file_sha:
+            result["file_sha256"] = file_sha
         if any(p["kind"] == "missing_account" for p in problems):
             result["account_types"] = [
                 {

@@ -209,11 +209,16 @@ async def csv_import_qb_report(
     Deposit Detail, or Check Detail.
 
     A Transaction Detail by Account file with problems posts nothing and
-    answers with them (#663); ``answers``, a JSON object, is the person's
-    answers to them, sent with the same file again: a text field, or a
-    part of its own, as the page sends it (a text field holds 1 MB, and
-    thousands of ticked transactions can be more)."""
-    from app.services.qb_ledger_import import read_answers
+    answers with them and the file's sha256 (#663); ``answers``, a JSON
+    object, is the person's answers to them, sent with the same file again
+    and carrying that sha256: a text field, or a part of its own, as the
+    page sends it (a text field holds 1 MB, and thousands of ticked
+    transactions can be more). Answers made for another file are refused."""
+    from app.services.qb_ledger_import import (
+        check_answers_file,
+        file_sha256,
+        read_answers,
+    )
     from app.services.qb_report_import import import_qb_report
     from app.services.safe_errors import DataProblem
 
@@ -226,6 +231,11 @@ async def csv_import_qb_report(
     except DataProblem as e:
         raise HTTPException(status_code=400, detail=e.user_text)
     raw = await read_limited(file, label="CSV file")
+    sha = file_sha256(raw)
+    try:
+        check_answers_file(answered, sha)
+    except DataProblem as e:
+        raise HTTPException(status_code=400, detail=e.user_text)
     if (file.filename or "").lower().endswith(".xlsx"):
         # a report saved as Excel (the timesheet reports usually are, #323):
         # its first sheet, cells as they read
@@ -246,4 +256,5 @@ async def csv_import_qb_report(
         posted_by=db.info.get("acting_username"),
         outflow_positive=outflow_positive,
         answers=answered,
+        file_sha=sha,
     )

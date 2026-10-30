@@ -1472,6 +1472,7 @@ def import_qb_report(
     posted_by: str = None,
     outflow_positive: bool = False,
     answers: dict | None = None,
+    file_sha: str | None = None,
 ) -> dict:
     """Import any supported QB report CSV, auto-detected by its columns.
 
@@ -1482,8 +1483,9 @@ def import_qb_report(
     ("Original Amount"/"Paid Amount" are distinct cells). (#62 review)
 
     ``answers`` (#663) are a person's answers to a Transaction Detail by
-    Account file's problems (qb_ledger_import.read_answers); the other
-    reports take none.
+    Account file's problems (qb_ledger_import.read_answers), and
+    ``file_sha`` the file's sha256, which a list of them names; the other
+    reports take neither.
     """
     kind = detect_report_type(csv_text, db)
     base = {
@@ -1567,6 +1569,7 @@ def import_qb_report(
             adjusting_only=adjusting_only,
             posted_by=posted_by,
             answers=answers,
+            file_sha=file_sha,
         )
         base["journals"] = sub.pop("journals", 0)
         base["adjusting"] = sub.pop("adjusting", False)
@@ -1579,6 +1582,7 @@ def import_qb_report(
             "accepted",
             "left_out",
             "differences_account",
+            "file_sha256",
         ):
             if key in sub:
                 base[key] = sub.pop(key)

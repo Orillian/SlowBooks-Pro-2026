@@ -765,6 +765,7 @@ LEDGER_PROBLEMS = {
     "errors": [],
     "warnings": [],
     "ready": 5,
+    "file_sha256": "5e" * 32,
     "problems": [
         {
             "kind": "cut_off",
@@ -950,6 +951,7 @@ def test_a_ledger_files_problems_are_listed_and_answered(browser):
         assert _form_field(sent[0], "answers") is None
         assert _form_field(sent[1], "file") == _form_field(sent[0], "file")
         assert json.loads(_form_field(sent[1], "answers")) == {
+            "file_sha256": "5e" * 32,
             "unbalanced": ["Check 1002 · 2024-01-03 · Harbor Properties"],
             "accounts": {"Card Fees": "expense"},
             "cut_off": True,

@@ -322,6 +322,8 @@ const IIFPage = {
         const ready = result.ready || 0;
         const here = result.duplicates_skipped || 0;
         IIFPage._errors.qbr = problems.map(p => p.text);
+        // the answers name the file the list was made for
+        if (IIFPage._qbReport) IIFPage._qbReport.sha = result.file_sha256 || '';
         let html = `<div class="iif-results qbr" id="qbr" role="region" aria-labelledby="qbr-title">
             <h4 id="qbr-title">Choose what to import</h4>
             <p class="qbr-lead">Nothing is imported yet. ${IIFPage._count(ready, 'transaction')} ${ready === 1 ? 'is' : 'are'} ready${here ? `, and ${IIFPage._count(here, 'transaction')} already here ${here === 1 ? 'is' : 'are'} skipped` : ''}. The file also has the problems below: tick one to accept it, or leave it unticked to leave it out. Then press Import.</p>
@@ -457,7 +459,7 @@ const IIFPage = {
     },
 
     _answers() {
-        const answers = { unbalanced: [], accounts: {}, cut_off: false };
+        const answers = { file_sha256: IIFPage._qbReport?.sha || '', unbalanced: [], accounts: {}, cut_off: false };
         for (const box of document.querySelectorAll('#qbr input.qbr-pick:checked')) {
             const kind = box.dataset.kind;
             if (kind === 'unbalanced') answers.unbalanced.push(box.dataset.key);

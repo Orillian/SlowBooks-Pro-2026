@@ -23,6 +23,7 @@ refusal of a file that holds anything but journal entries. The fixtures are
 variants of tests/fixtures/qb_desktop's invented books.
 """
 
+import hashlib
 import io
 import json
 
@@ -34,7 +35,7 @@ from app.services.qb_ledger_import import SOURCE_TYPE
 from tests.test_qb_desktop_ledger import ACCOUNTS, FIXTURE, _chart
 from tests.test_qb_desktop_round_trip import GJ_ONLY
 from tests.test_qb_ledger_other_sections import _report as _other_sections_report
-from tests.qb_ledger_files import build, grand, heading, row, total
+from tests.qb_ledger_files import build, grand, heading, row, sha, total
 
 URL = "/api/csv/import/qb-report"
 CHECK_1002 = "Check 1002 · 2024-01-31 · Harbor Properties"
@@ -43,6 +44,9 @@ CHECK_1002 = "Check 1002 · 2024-01-31 · Harbor Properties"
 def _send(client, data: bytes, answers=None, adjusting=False):
     form = {}
     if answers is not None:
+        # the file's sha256, as the list gave it (an answer carries it)
+        if isinstance(answers, dict):
+            answers = {"file_sha256": sha(data), **answers}
         form["answers"] = json.dumps(answers)
     if adjusting:
         form["adjusting_only"] = "true"
@@ -468,7 +472,7 @@ def test_answers_longer_than_a_text_field_come_as_a_part(
         f"Check {n} · 2024-02-01 · Northwind Property Management Group"
         for n in range(30000)
     ]
-    body = json.dumps({"unbalanced": keys}).encode()
+    body = json.dumps({"file_sha256": sha(UNBALANCED), "unbalanced": keys}).encode()
     assert len(body) > 1024 * 1024
     r = client.post(
         URL,
@@ -480,6 +484,75 @@ def test_answers_longer_than_a_text_field_come_as_a_part(
     assert r.status_code == 200, r.text
     assert r.json()["journals"] == 8
     assert r.json()["accepted"]["unbalanced"] == 1
+
+
+def test_the_list_names_the_file_it_was_made_for(client, db_session, seed_accounts):
+    _chart(db_session)
+    data = _upload(client, UNBALANCED)
+    assert data["file_sha256"] == hashlib.sha256(UNBALANCED).hexdigest()
+    # a clean file has no list, and so no sha
+    assert "file_sha256" not in _upload(client, FIXTURE.read_bytes())
+
+
+# the reviewer's case: the list made for a general journal entry 10.00 off,
+# the answers sent with a file where it is 10,000.00 off
+SEEN = build(
+    [
+        heading("Operating Checking 4321"),
+        row("General Journal", "01/31/2024", "31", "", "accrual", "Rent", "", "10.00"),
+        total("Operating Checking 4321", "0.00", "10.00"),
+        grand("0.00", "10.00"),
+    ]
+)
+SENT = build(
+    [
+        heading("Operating Checking 4321"),
+        row(
+            "General Journal",
+            "01/31/2024",
+            "31",
+            "",
+            "accrual",
+            "Rent",
+            "",
+            "10,000.00",
+        ),
+        total("Operating Checking 4321", "0.00", "10,000.00"),
+        grand("0.00", "10,000.00"),
+    ]
+)
+
+
+def test_answers_made_for_another_file_are_refused(client, db_session, seed_accounts):
+    """The answers follow the file, not the key: a key the list made for
+    one file posted a transaction 10,000.00 off from another."""
+    _chart(db_session)
+    first = _upload(client, SEEN)
+    (p,) = first["problems"]
+    assert p["off"] == "-10.00"
+    answers = {"file_sha256": first["file_sha256"], "unbalanced": [p["key"]]}
+    r = _send(client, SENT, answers)
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"] == (
+        "The file changed since the list was made; upload it again."
+    )
+    assert _imported(db_session) == []
+    assert _account(db_session, "Import Differences") is None
+    # the file the list was made for takes them
+    data = _upload(client, SEEN, answers)
+    assert data["journals"] == 1 and data["accepted"]["unbalanced"] == 1
+
+
+def test_answers_that_name_no_file_are_refused(client, db_session, seed_accounts):
+    _chart(db_session)
+    r = client.post(
+        URL,
+        files={"file": ("t.csv", io.BytesIO(UNBALANCED), "text/csv")},
+        data={"answers": json.dumps({"unbalanced": [CHECK_1002]})},
+    )
+    assert r.status_code == 400, r.text
+    assert "file_sha256" in r.json()["detail"]
+    assert _imported(db_session) == []
 
 
 # ── a file that looks cut short or edited ────────────────────────────────
