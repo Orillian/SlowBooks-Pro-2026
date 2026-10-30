@@ -145,6 +145,16 @@ whole if anything is off, and uploading it again posts nothing twice. A
 refusal lists every transaction that is off, however many; **Save the
 list** under the box writes them to a text file to work from.
 
+In a bank or card register each entry reads as one typed there does:
+QuickBooks' **Name** is the payee, its **Num** the Ref # (a check number
+counts toward the next check number and the duplicate check number
+warning), and each line's **Memo** the memo. An entry with no name, such
+as a general journal entry or a transfer, has no payee and reads as its
+memo on the Journal Entries page and in reports. Books imported before
+2.31.2 showed "Check 1001 — Name: memo" as the payee; upgrading rewrites
+those entries the same way, and leaves any it cannot read back exactly as
+they were. Either way, uploading the same file again posts nothing twice.
+
 Journal entries carry the history; the A/R and A/P aging read invoices and
 bills, so a company that invoices in QuickBooks brings its open invoices in
 from the invoice report below.
