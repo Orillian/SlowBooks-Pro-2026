@@ -152,11 +152,16 @@ def test_token_cannot_clear_or_roll_back_closing_date(client, legacy_admin_token
     assert client.get("/api/settings").json()["closing_date"] == "2026-06-30"
 
 
-def test_token_may_still_tighten_the_closing_date(client, legacy_admin_token):
+def test_no_token_tightens_the_closing_date_either(client, legacy_admin_token):
+    """Settings are an administrator's, and since #659 no token is one: the
+    admin token from before 2.29.0 that used to reach this is refused at
+    the door, so a token can neither loosen nor tighten the closing date."""
     client.put("/api/settings", json={"closing_date": "2026-06-30"})
     tc = _bearer(legacy_admin_token())
     r = tc.put("/api/settings", json={"closing_date": "2026-07-31"})
-    assert r.status_code == 200, r.text
+    assert r.status_code == 403, r.text
+    assert "can't be administrators" in r.json()["detail"]
+    assert client.get("/api/settings").json()["closing_date"] == "2026-06-30"
 
 
 def test_token_cannot_set_closing_date_password(client, legacy_admin_token):
@@ -171,12 +176,14 @@ def test_session_user_may_still_clear_closing_date(client):
     assert r.status_code == 200, r.text
 
 
-def test_token_settings_writes_are_otherwise_unaffected(client, legacy_admin_token):
-    """The guard must not block unrelated settings updates once a lock is set."""
+def test_session_settings_writes_are_otherwise_unaffected(client):
+    """The closing-date guard must not block unrelated settings updates
+    once a lock is set (a signed-in administrator's; no token writes
+    settings since #659)."""
     client.put("/api/settings", json={"closing_date": "2026-06-30"})
-    tc = _bearer(legacy_admin_token())
-    r = tc.put("/api/settings", json={"company_name": "Still Editable LLC"})
+    r = client.put("/api/settings", json={"company_name": "Still Editable LLC"})
     assert r.status_code == 200, r.text
+    assert client.get("/api/settings").json()["company_name"] == "Still Editable LLC"
 
 
 # ---------------------------------------------------------------------------

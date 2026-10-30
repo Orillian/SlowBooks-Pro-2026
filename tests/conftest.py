@@ -498,8 +498,8 @@ def db_session(TestSession):
 def legacy_admin_token(db_session):
     """make(label) → the secret of an admin-role API token, written to the
     database the way one made before 2.29.0 is. None are made now (#434),
-    but those that exist keep working until they are revoked, so the rules
-    an admin token still meets are tested on one of these."""
+    and one that exists is refused on every request until it is revoked
+    (#659); that refusal is what these test."""
     from app.models.api_tokens import ApiToken
     from app.services.api_token_service import generate_token, hash_token
 

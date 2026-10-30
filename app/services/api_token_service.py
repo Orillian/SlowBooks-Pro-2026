@@ -11,11 +11,21 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 from app.models.api_tokens import TOKEN_PREFIX, ApiToken
+from app.models.users import ROLE_ADMIN
 from app.models.users import VALID_ROLES  # noqa: F401 — re-exported for routes
 
 # last_used_at is best-effort telemetry; throttle writes so a chatty agent
 # doesn't turn every GET into a DB write.
 _LAST_USED_RESOLUTION = timedelta(minutes=5)
+
+
+# An administrator's token from before 2.29.0 (#659): refused at the door.
+ADMIN_TOKEN_REFUSAL = (
+    'The API token "{label}" was made as an administrator, and API tokens '
+    "can't be administrators any more. Revoke it under Settings, API Tokens, "
+    "and make a bookkeeper, accountant or read-only token for the program "
+    "that uses it."
+)
 
 
 def generate_token() -> str:
@@ -47,7 +57,11 @@ def resolve(bearer: str) -> dict | None:
         last = row.last_used_at
         if last is not None and last.tzinfo is None:
             last = last.replace(tzinfo=timezone.utc)
-        if last is None or (now - last) > _LAST_USED_RESOLUTION:
+        # An admin-role token is refused at the door (#659): "last used"
+        # would read as if it got in, so it is not stamped.
+        if row.role != ROLE_ADMIN and (
+            last is None or (now - last) > _LAST_USED_RESOLUTION
+        ):
             row.last_used_at = now
             db.commit()
         return {

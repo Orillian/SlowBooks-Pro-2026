@@ -229,8 +229,8 @@ token can do the month-end and year-end work unattended. The order that
 
 1. `GET /openapi.json` — every nonprofit path is described.
 2. `PUT /api/settings {"company_type": "nonprofit"}` then
-   `POST /api/nonprofit/setup-accounts` (admin token; a bookkeeper token
-   gets 403 on settings).
+   `POST /api/nonprofit/setup-accounts` (a signed-in administrator; a
+   bookkeeper token gets 403 on settings).
 3. `POST /api/classes` with `restriction` and `default_function`;
    `POST /api/customers` with `donor_type`, `salutation`,
    `send_year_end_statement`; `POST /api/jobs` for a grant.

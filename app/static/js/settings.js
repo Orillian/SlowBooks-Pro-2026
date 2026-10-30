@@ -1588,7 +1588,7 @@ const SettingsPage = {
             const rows = tokens.map(t => `<tr>
                 <td>${escapeHtml(t.label)}</td>
                 <td style="font-family:var(--font-mono); font-size:10px;">${escapeHtml(t.token_hint)}&hellip;</td>
-                <td>${escapeHtml(t.role)}</td>
+                <td>${escapeHtml(t.role)}${t.refused ? `<div style="font-size:10px;color:var(--text-danger)">no longer accepted: tokens can't be administrators. Revoke it and make a bookkeeper, accountant or read-only token.</div>` : ''}</td>
                 <td>${t.is_active
                     ? `<input type="checkbox" name="token-backups:${t.id}" aria-label="${escapeHtml(t.label)} can make backups" style="width:auto;" ${t.allow_backups ? 'checked' : ''} onchange="SettingsPage.updateApiToken(${t.id}, {allow_backups: this.checked})">`
                     : (t.allow_backups ? 'Yes' : 'No')}</td>

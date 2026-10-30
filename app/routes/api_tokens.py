@@ -53,6 +53,9 @@ def _out(t: ApiToken) -> dict:
         "created_by": t.created_by,
         "created_at": _utc_iso(t.created_at),
         "last_used_at": _utc_iso(t.last_used_at),
+        # An administrator's token from before 2.29.0 is refused on every
+        # request (#659); the list says so, so it gets revoked and replaced.
+        "refused": bool(t.is_active and t.role == ROLE_ADMIN),
     }
 
 

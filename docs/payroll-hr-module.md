@@ -161,8 +161,8 @@ portal_token_expires_at = Column(DateTime(timezone=True), nullable=True)
 
 | Method + Path | Purpose |
 |---------------|---------|
-| `GET /api/employees/{id}/portal-token` | Mint or return existing token + expiry |
-| `POST /api/employees/{id}/portal-token` | Rotate token (resets expiry windows) |
+| `GET /api/employees/{id}/portal-token` | The token + expiry as they stand; never mints (null with a note when there is none) |
+| `POST /api/employees/{id}/portal-token` | Make the token, or rotate it (resets expiry windows) |
 
 ### Routes — employee (token-authed, rate-limited)
 

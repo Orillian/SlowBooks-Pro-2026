@@ -229,22 +229,28 @@ def _portal_url(request: Request, token: str) -> str:
 
 @router.get("/{emp_id}/portal-token")
 def get_portal_token(request: Request, emp_id: int, db: Session = Depends(get_db)):
-    """Return the employee's self-service portal token, minting one if absent."""
+    """The employee's self-service portal link as it stands. A read: it
+    never mints one (#659; it used to, so a read-only role or an agent's
+    read tool could make an employee's login). POST on this path makes or
+    rotates the link. ``portal_token`` is null with ``note`` saying why:
+    none yet, or a copy this install's payroll key cannot open."""
     emp = db.query(Employee).filter(Employee.id == emp_id).first()
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
-    if not emp.portal_token_hash:
-        _mint_portal_token(emp)
-        db.commit()
-    token = emp.portal_token
+    token = emp.portal_token if emp.portal_token_hash else None
     answer = {
         "employee_id": emp.id,
         "portal_token": token,
         "portal_url": _portal_url(request, token) if token else None,
         "expires_at": _iso_utc(emp.portal_token_expires_at),
         "last_used_at": _iso_utc(emp.portal_token_last_used),
+        # Said outright, so the page never guesses from expires_at (a link
+        # from before that column existed has none, and still works).
+        "has_link": bool(emp.portal_token_hash),
     }
-    if not token:
+    if not emp.portal_token_hash:
+        answer["note"] = "This employee has no portal link yet. Make Link makes one."
+    elif not token:
         # A link whose encrypted copy this install's payroll key can't open:
         # it still works, and the next time the employee uses it the copy is
         # kept again (routes/portal.py). Never re-minted here: that would
@@ -369,7 +375,8 @@ def list_portal_access(
 def regenerate_portal_token(
     request: Request, emp_id: int, db: Session = Depends(get_db)
 ):
-    """Rotate the portal token (invalidates the previous self-service link)."""
+    """Make the portal link, or rotate it (the previous self-service link
+    stops working). The one way a link is made (#659)."""
     emp = db.query(Employee).filter(Employee.id == emp_id).first()
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")

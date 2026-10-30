@@ -667,7 +667,7 @@ All endpoints under `/api/`. Swagger docs at `/docs`. 300+ routes across 50 rout
 |----------|---------|-------------|
 | `/api/employees` | GET, POST, PUT | Employee CRUD with W-4, address, hire date, work state |
 | `/api/employees/{id}/ytd` | GET | Year-to-date totals (gross, taxes, deductions, net) |
-| `/api/employees/{id}/portal-token` | GET, POST | Self-service portal token (no company password needed) |
+| `/api/employees/{id}/portal-token` | GET, POST | Self-service portal token (no company password needed); GET reads what exists, POST makes or rotates it |
 | `/api/employees/{id}/bank-accounts` | GET, POST, DELETE | ACH direct deposit routing/account numbers (encrypted) |
 | `/api/payroll` | GET, POST | Pay run CRUD |
 | `/api/payroll/{id}` | GET, DELETE | One pay run; DELETE discards a draft (its stubs, and the benefit year-to-date, loan balances and time entries it moved, put back; a later draft that counted it is flagged). A processed run is refused (409) |
@@ -760,7 +760,7 @@ All payroll, HR, tax-form, and self-service portal endpoints are documented with
 | `/api/payments/{provider}/create-checkout-session` | POST | Create a hosted checkout for an invoice (public; the token is the capability) |
 | `/api/payments/{provider}/webhook` | POST | Provider webhook handler (`/api/stripe/webhook` still works) |
 | `/api/payments/{provider}/check-status/{invoice_id}` | POST | Ask the provider whether an invoice was paid |
-| `/api/payments/payment-link/{invoice_id}` | GET | Public payment URL for an invoice (a read-only sign-in reads one; it can't make one) |
+| `/api/payments/payment-link/{invoice_id}` | GET, POST | Public payment URL for an invoice: GET reads one that exists (404 with a sentence when none), POST makes it (not a read-only sign-in's) |
 
 ### System
 | Endpoint | Methods | Description |

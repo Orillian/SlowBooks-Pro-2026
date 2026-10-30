@@ -135,10 +135,10 @@ What a token cannot do, whatever its role or permission:
   Make a new token for a program that still needs one. A secret that matches
   no token is answered "Not authenticated", with nothing more.
 
-Admin tokens made before 2.29.0 keep working as they did, with two changes:
-they cannot restore a backup, and once revoked they stay revoked. No new
-admin token can be made; revoke them and give each program a token with the
-role it needs.
+An admin token made before 2.29.0 is refused on every request with a
+sentence that says to revoke it and make a bookkeeper, accountant or
+read-only token for the program; Settings, API Tokens flags it in the list
+until it is revoked. No new admin token can be made.
 
 ## Several companies on one server
 

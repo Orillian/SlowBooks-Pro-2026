@@ -160,6 +160,7 @@ from app.services.closing_date import (
     PASSWORD_HEADER as _CLOSING_PASSWORD_HEADER,
     password_from_header as _closing_password_from_header,
 )
+from app.services.api_token_service import ADMIN_TOKEN_REFUSAL
 from app.services.api_token_service import resolve as _resolve_api_token
 from app.services.served_companies import CompanyUnavailable, sentence_of
 
@@ -1076,11 +1077,21 @@ def _is_token_backup_route(method: str, path: str) -> bool:
     return method in ("GET", "HEAD") and bool(_TOKEN_BACKUP_DOWNLOAD_RE.match(path))
 
 
-def _role_refusal(role: str) -> str:
-    """The sentence a refused write gets: the accountant's says what the
-    role is for (#340); the others keep the one the pages pin."""
+ACCOUNTANT_READ_REFUSAL = (
+    "An accountant's sign-in reads the books, but employee records and "
+    "portal links stay with an administrator."
+)
+
+
+def _role_refusal(role: str, method: str = "POST") -> str:
+    """The sentence a refused request gets: the accountant's says what the
+    role is for (#340), and for a read, what it cannot see (#659: the
+    employee routes are an administrator's even to read); the others keep
+    the one the pages pin."""
     if role == "accountant":
-        return ACCOUNTANT_REFUSAL
+        return (
+            ACCOUNTANT_READ_REFUSAL if method in _READ_METHODS else ACCOUNTANT_REFUSAL
+        )
     return "Your role doesn't allow this action"
 
 
@@ -1176,6 +1187,18 @@ async def _require_session(request: Request, call_next):
                 status_code=401,
                 content={"detail": "Not authenticated"},
             )
+        if token_principal.get("role") == "admin":
+            # Tokens have not been made as administrators since 2.29.0
+            # (#434), but one made earlier kept working until revoked
+            # (#659). It is refused now, with what to do instead; the
+            # row stays, flagged under Settings, API Tokens, until an
+            # administrator revokes it.
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": ADMIN_TOKEN_REFUSAL.format(label=token_principal["label"])
+                },
+            )
         # Tokens cannot manage identities — a leaked bookkeeper token must
         # not be able to mint itself an admin token or a user account.
         if path.startswith(("/api/users", "/api/tokens")):
@@ -1226,7 +1249,7 @@ async def _require_session(request: Request, call_next):
     ):
         return JSONResponse(
             status_code=403,
-            content={"detail": _role_refusal(role)},
+            content={"detail": _role_refusal(role, request.method)},
         )
     # An accountant's copy (#346) takes journal entries and nothing else,
     # whoever is signed in: the one permission the copy has.

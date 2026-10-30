@@ -2394,7 +2394,7 @@ def _who_entered(db_session, bill):
 
 
 def test_with_a_password_the_startup_run_waits_for_a_sign_in(
-    client, db_session, seed_accounts, monkeypatch, legacy_admin_token
+    client, db_session, seed_accounts, monkeypatch
 ):
     """W-70: the run at server start entered a memorized schedule before
     the company's password was entered. With a password set, the startup
@@ -2403,6 +2403,9 @@ def test_with_a_password_the_startup_run_waits_for_a_sign_in(
     audit log names the person signed in."""
     monkeypatch.setattr(scheduler, "_last_run", None)
     _bill_schedule(client, _vendor(client), seed_accounts)  # auto, due Jan 31
+    token = client.post(
+        "/api/tokens", json={"label": "reader", "role": "readonly"}
+    ).json()["token"]
     assert client.post("/api/auth/logout").status_code == 200
     monkeypatch.setattr(scheduler, "_signed_in_as", None)  # the server starts
 
@@ -2411,7 +2414,6 @@ def test_with_a_password_the_startup_run_waits_for_a_sign_in(
 
     assert startup() == scheduler.WAITING_FOR_SIGN_IN
     assert client.get("/api/accounts").status_code == 401
-    token = legacy_admin_token()
     r = client.get("/api/accounts", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200
     assert startup() == scheduler.WAITING_FOR_SIGN_IN

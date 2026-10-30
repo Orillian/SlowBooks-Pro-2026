@@ -5,6 +5,10 @@ Notable changes between releases. Format roughly follows
 used during development is captured here so the README can stay focused
 on what the software does, not on what sprint shipped what.
 
+### Unreleased
+
+**A read never makes anything, and an administrator's API token from before 2.29.0 stops working** (#659, @ContractorKeith). Two GETs used to write when the thing was not there yet: `GET /api/employees/{id}/portal-token` minted the employee's portal link and `GET /api/payments/payment-link/{invoice_id}` made the invoice's payment link. Each is a read now, answering what exists (and a sentence saying how to make one when nothing does); the link is made with `POST` on the same path, which a read-only sign-in or an agent's read tool cannot reach. API tokens have not been made as administrators since 2.29.0, but one made earlier kept working until revoked; it is refused now with a sentence saying to revoke it and make a bookkeeper, accountant or read-only token, and Settings, API Tokens flags it.
+
 ### v2.31.1 — Sub-customers, memorized transactions, and stock that comes back out at its own cost
 
 **Each sign-in is offered only what it may do.** The Memorized Transactions

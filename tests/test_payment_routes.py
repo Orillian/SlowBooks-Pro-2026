@@ -106,26 +106,55 @@ def test_success_banner_not_shown_on_unverified_return(unauthed_client, invoice)
     assert "being confirmed" in resp.text
 
 
-def test_a_read_only_sign_in_reads_a_link_but_never_makes_one(
-    client, db_session, invoice
-):
-    # 2.18.0 gate (skytech): GET /payment-link made a token when the
-    # invoice had none, a write the read-only role could reach.
+def test_a_read_never_makes_a_payment_link(client, db_session, invoice):
+    """#659 (and the 2.18.0 gate before it): GET /payment-link answers the
+    link that exists and never makes one, whoever asks; POST makes it, so
+    a read-only sign-in cannot, and a bookkeeper's token can."""
     from fastapi.testclient import TestClient
 
     from app.main import app
 
-    r = client.post("/api/tokens", json={"label": "reader", "role": "readonly"})
-    assert r.status_code == 201, r.text
-    reader = TestClient(app)
-    reader.headers["Authorization"] = f"Bearer {r.json()['token']}"
+    def bearer(role, label):
+        r = client.post("/api/tokens", json={"label": label, "role": role})
+        assert r.status_code == 201, r.text
+        c = TestClient(app)
+        c.headers["Authorization"] = f"Bearer {r.json()['token']}"
+        return c
+
+    reader, keeper = bearer("readonly", "reader"), bearer("bookkeeper", "keeper")
     had = invoice.payment_token
     ok = reader.get(f"/api/payments/payment-link/{invoice.id}")
     assert ok.status_code == 200 and f"/pay/{had}" in ok.json()["url"]
     invoice.payment_token = None
     db_session.commit()
-    refused = reader.get(f"/api/payments/payment-link/{invoice.id}")
-    assert refused.status_code == 403
-    assert "read-only" in refused.json()["detail"]
+    for who in (reader, keeper, client):
+        none = who.get(f"/api/payments/payment-link/{invoice.id}")
+        assert none.status_code == 200, none.text
+        assert none.json()["url"] is None
+        assert "no payment link yet" in none.json()["note"]
+    # The read-only reader is told who to ask, not to POST (skeptic pass).
+    assert "ask an administrator or bookkeeper" in (
+        reader.get(f"/api/payments/payment-link/{invoice.id}").json()["note"]
+    )
+    assert "Copy Payment Link" in (
+        keeper.get(f"/api/payments/payment-link/{invoice.id}").json()["note"]
+    )
+    cpa = bearer("accountant", "cpa")
+    assert "an accountant's sign-in can't make one" in (
+        cpa.get(f"/api/payments/payment-link/{invoice.id}").json()["note"]
+    )
     db_session.refresh(invoice)
     assert invoice.payment_token is None
+    assert reader.post(f"/api/payments/payment-link/{invoice.id}").status_code == 403
+    db_session.refresh(invoice)
+    assert invoice.payment_token is None
+    made = keeper.post(f"/api/payments/payment-link/{invoice.id}")
+    assert made.status_code == 200
+    db_session.refresh(invoice)
+    assert invoice.payment_token
+    assert f"/pay/{invoice.payment_token}" in made.json()["url"]
+    # stable: making it again is the same link, and the read agrees
+    again = client.post(f"/api/payments/payment-link/{invoice.id}").json()["url"]
+    assert again == made.json()["url"]
+    assert client.get(f"/api/payments/payment-link/{invoice.id}").json()["url"] == again
+    assert client.post("/api/payments/payment-link/999999").status_code == 404

@@ -24,7 +24,7 @@ def _create_employee(client, **overrides):
 
 
 def _portal_token(client, emp_id):
-    r = client.get(f"/api/employees/{emp_id}/portal-token")
+    r = client.post(f"/api/employees/{emp_id}/portal-token")
     assert r.status_code == 200, r.text
     return r.json()["portal_token"]
 
