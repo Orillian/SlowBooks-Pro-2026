@@ -915,3 +915,38 @@ def test_a_date_with_a_year_no_books_hold_is_neither_applied_nor_kept(browser):
         assert page.evaluate("() => location.hash") == "#/banking/1"
     finally:
         page.close()
+
+
+def test_a_from_after_today_is_not_kept_nor_used(browser):
+    """The From kept opens every link to the register with no dates in it
+    (#663): one after today would open it on nothing yet. A From typed
+    after today applies, and the one kept before it stays; one kept after
+    today (the clock since moved back, an earlier build) is not used."""
+    today = dt.date.today()
+    ahead = (today + dt.timedelta(days=10)).isoformat()
+    page = _register_page(browser, [], "#/banking/1?start_date=2026-09-01")
+    try:
+        assert page.evaluate(KEPT, 1) == "2026-09-01"
+        page.fill("#reg-start", ahead)  # picked: applies at once
+        page.wait_for_function(
+            "(d) => location.hash === `#/banking/1?start_date=${d}`", arg=ahead
+        )
+        assert page.evaluate(KEPT, 1) == "2026-09-01"
+        _open_register(page, 4, "")
+        _open_register(page, 1, "2026-09-01")
+
+        page.evaluate(
+            "(d) => localStorage.setItem(BankingPage._fromKey(1), d)",
+            (today + dt.timedelta(days=1)).isoformat(),
+        )
+        _open_register(page, 4, "")
+        _open_register(page, 1, "")
+        assert page.evaluate("() => location.hash") == "#/banking/1"
+        # today itself is a day the register can open on
+        page.evaluate(
+            "(d) => localStorage.setItem(BankingPage._fromKey(1), d)", today.isoformat()
+        )
+        _open_register(page, 4, "")
+        _open_register(page, 1, today.isoformat())
+    finally:
+        page.close()

@@ -639,18 +639,21 @@ const BankingPage = {
         const owner = (typeof App !== 'undefined' && App._tabsOwner) || '';
         return `slowbooks-register-from:${owner}:${id}`;
     },
+    // A From kept for a day after today is not used: it would open the
+    // register on nothing yet, wherever the link came from.
     _lastFrom(id) {
         try {
             const v = localStorage.getItem(BankingPage._fromKey(id)) || '';
-            return BankingPage._likelyDate(v) ? v : '';
+            return BankingPage._likelyDate(v) && v <= todayISO() ? v : '';
         } catch (e) { return ''; }
     },
-    // A From with a year no books hold is not kept (a year typed a digit
-    // at a time); the one kept before it stays.
+    // A From with a year no books hold (a year typed a digit at a time), or
+    // after today (a look at checks dated ahead), is not kept; the one kept
+    // before it stays.
     _keepFrom(id, date) {
         try {
             if (!date) localStorage.removeItem(BankingPage._fromKey(id));
-            else if (BankingPage._likelyDate(date)) localStorage.setItem(BankingPage._fromKey(id), date);
+            else if (BankingPage._likelyDate(date) && date <= todayISO()) localStorage.setItem(BankingPage._fromKey(id), date);
         } catch (e) { /* not kept: the next visit opens on every date */ }
     },
 
