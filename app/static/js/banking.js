@@ -693,11 +693,123 @@ const BankingPage = {
         BankingPage._keepFrom(id, next.start_date);
         const url = BankingPage._regUrl(id);
         if ((location.hash || '#/') !== url) history.replaceState(history.state, '', url);
-        App.navigate(url);
+        return App.navigate(url);
     },
 
     regClear(id) {
         BankingPage.regFilterChanged(id, { start_date: '', end_date: '', class_id: '' });
+    },
+
+    // From and To apply as a text box's change does (#663): on Enter, or
+    // when the filter bar is left, not at each whole date a box makes while
+    // one is typed. Chromium and WebView2 fire change on the first
+    // keystroke that forms a date, and the register drawn again on it cut
+    // the typing short (11 typed into the month gave January, a day from 10
+    // up became 1 to 3, a year 0002) and kept that From for every later
+    // visit. A date picked from the calendar, or stepped with the date keys
+    // (+ - T M H Y R), applies at once, as the other date filters apply
+    // their change: nothing is being typed. Moving between From, To, the
+    // class and Clear is staying in the bar, so From and To typed one after
+    // the other apply together.
+    regFiltersKey(e, id) {
+        if (e.key === 'Tab') { BankingPage._tabbed = e.shiftKey ? 'back' : 'on'; return; }
+        BankingPage._tabbed = null;
+        const box = e.target;
+        if ((box.id !== 'reg-start' && box.id !== 'reg-end') || e.defaultPrevented) return;
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            BankingPage._applyDates(id, { focus: box.id });
+        } else if (BankingPage._editsDate(e)) {
+            box.dataset.typed = '1';
+        }
+    },
+
+    // A key that changes a date box's month, day or year as typed: a digit,
+    // Backspace or Delete, an arrow up or down; not Tab, Enter, the arrows
+    // across, nor a key held with Ctrl, Alt or Cmd.
+    _editsDate(e) {
+        if (e.ctrlKey || e.altKey || e.metaKey) return false;
+        return /^[0-9]$/.test(e.key) || ['Backspace', 'Delete', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'].includes(e.key);
+    },
+
+    // A press on a box: its calendar opening, or a click into a part of it.
+    // What is picked from the calendar applies at once.
+    regDatePointer(box) { delete box.dataset.typed; },
+
+    regDateChanged(box, id) {
+        if (box.dataset.typed) return;  // typed: on Enter, or when the bar is left
+        BankingPage._applyDates(id, { focus: document.activeElement === box ? box.id : null });
+    },
+
+    // The bar left. Not when the focus only moved within it, or the window
+    // lost it, or the page is going. Left by the keyboard, the register is
+    // drawn again and the keyboard goes on past the bar. Left by a click on
+    // a link or a button, the dates apply once that click is done, and not
+    // if it took the page elsewhere (Back, the sidebar): drawn then, the
+    // register could land over the page the click opened.
+    regFiltersLeft(e, id) {
+        const bar = e.currentTarget;
+        const to = e.relatedTarget;
+        const past = BankingPage._tabbed;
+        BankingPage._tabbed = null;
+        if ((to && bar.contains(to)) || bar.contains(document.activeElement)) return;
+        if (!document.contains(bar) || !BankingPage._onRegister(id) || !BankingPage._datesTyped()) return;
+        const keyboard = typeof App !== 'undefined' && typeof App.keyboardFocus === 'function' && App.keyboardFocus();
+        if (!keyboard && to && to.closest && to.closest('a[href], button')) BankingPage._applyAfterClick(id);
+        else BankingPage._applyDates(id, { focus: to && to.id ? to.id : null, past: keyboard ? past : null });
+    },
+
+    // Whether a date box holds what the register is not on: a date typed
+    // and not applied yet, or one half typed. Never on a bar a newer drawing
+    // of the register is replacing: that drawing has the filter already
+    // (Clear, a save), and Chromium's focusout as the old bar is taken away
+    // read its old dates as typed.
+    _datesTyped() {
+        const bar = document.getElementById('reg-filters');
+        if (!bar || bar.dataset.drawn !== String(BankingPage._drawing)) return false;
+        const f = BankingPage._regFilter;
+        return [['reg-start', 'start_date'], ['reg-end', 'end_date']].some(([el, k]) => {
+            const box = document.getElementById(el);
+            return !!box && (!!(box.validity && box.validity.badInput) || (box.value || '') !== (f[k] || ''));
+        });
+    },
+
+    _applyDates(id, { focus = null, past = null } = {}) {
+        ['reg-start', 'reg-end'].forEach(k => { const box = document.getElementById(k); if (box) delete box.dataset.typed; });
+        if (!BankingPage._datesTyped()) return;
+        const drawn = BankingPage.regFilterChanged(id);
+        if (drawn && (focus || past)) drawn.then(() => BankingPage._focusAfterDates(focus, past));
+    },
+
+    _applyAfterClick(id) {
+        if (BankingPage._afterClick) document.removeEventListener('click', BankingPage._afterClick, true);
+        const after = () => {
+            document.removeEventListener('click', after, true);
+            BankingPage._afterClick = null;
+            setTimeout(() => { if (BankingPage._onRegister(id)) BankingPage._applyDates(id); }, 0);
+        };
+        BankingPage._afterClick = after;
+        document.addEventListener('click', after, true);
+    },
+
+    // The keyboard where it was once the register is drawn again: in the
+    // box Enter was pressed in, on the control it moved to, or past the bar
+    // (the stop after it, or before it for Shift+Tab). Focus the redraw did
+    // not take (a box outside the page) is left where it is.
+    _focusAfterDates(focus, past) {
+        const active = document.activeElement;
+        if (active && active !== document.body && document.contains(active)) return;
+        let el = focus ? document.getElementById(focus) : null;
+        const page = document.getElementById('page-content');
+        const bar = document.getElementById('reg-filters');
+        if (!el && past && page && bar) {
+            const after = past === 'on';
+            const side = [...page.querySelectorAll(_TAB_SEL)]
+                .filter(s => !bar.contains(s) && !!(bar.compareDocumentPosition(s) & Node.DOCUMENT_POSITION_FOLLOWING) === after);
+            if (!after) side.reverse();
+            el = side.find(s => s.tabIndex >= 0 && !s.matches(':disabled') && _drawn(s)) || null;
+        }
+        if (el) focusFor(el, true);
     },
 
     // Back to the register after a change made on it (#663): on its own
@@ -732,8 +844,11 @@ const BankingPage = {
         return App.parseHash(location.hash).path === `/banking/${id}`;
     },
 
+    _drawing: 0,  // each drawing of a register, its filter bar marked with it
+
     async renderRegister(accountId, query) {
         const id = parseInt(accountId, 10);
+        const drawing = ++BankingPage._drawing;
         const q = query || {};
         const f = BankingPage._regFilterFrom(q);
         // no dates in the address: the From date this register was last
@@ -799,12 +914,16 @@ const BankingPage = {
 
         const classOpts = classes.map(c => `<option value="${c.id}"${String(c.id) === f.class_id ? ' selected' : ''}>${escapeHtml(c.name)}${c.is_archived ? ' (archived)' : ''}</option>`).join('');
         const filtered = !!(f.start_date || f.end_date || f.class_id);
+        // From and To apply on Enter or once the bar is left, a pick from the
+        // calendar at once (#663: regFiltersKey)
+        const dateBox = `onpointerdown="BankingPage.regDatePointer(this)" onchange="BankingPage.regDateChanged(this, ${id})"`;
         html += `
-            <div class="toolbar" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <div class="toolbar" id="reg-filters" data-drawn="${drawing}" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;"
+                onkeydown="BankingPage.regFiltersKey(event, ${id})" onfocusout="BankingPage.regFiltersLeft(event, ${id})">
                 <label for="reg-start" style="font-size:11px;">From</label>
-                <input type="date" id="reg-start" value="${escapeHtml(f.start_date)}" onchange="BankingPage.regFilterChanged(${id})">
+                <input type="date" id="reg-start" value="${escapeHtml(f.start_date)}" ${dateBox}>
                 <label for="reg-end" style="font-size:11px;">To</label>
-                <input type="date" id="reg-end" value="${escapeHtml(f.end_date)}" onchange="BankingPage.regFilterChanged(${id})">
+                <input type="date" id="reg-end" value="${escapeHtml(f.end_date)}" ${dateBox}>
                 <label for="reg-class" style="font-size:11px;">${T('Class')}</label>
                 <select id="reg-class" data-no-search onchange="BankingPage.regFilterChanged(${id})"><option value="">All ${T('classes').toLowerCase()}</option>${classOpts}</select>
                 ${filtered ? `<button type="button" class="btn btn-sm btn-secondary" onclick="BankingPage.regClear(${id})">Clear</button>` : ''}

@@ -672,3 +672,181 @@ def test_the_register_opens_on_the_from_date_it_last_used(browser):
         assert page.evaluate("() => location.hash") == "#/banking/1"
     finally:
         page.close()
+
+
+# ── #663: From and To typed a key at a time ──────────────────────────────
+
+# the register's filter bar, the From box's toolbar
+BAR = "document.getElementById('reg-start').closest('.toolbar')"
+MARK_BAR = f"() => {{ {BAR}.dataset.probe = 'typing'; }}"
+# the bar as it was before typing: the register was not drawn again
+SAME_BAR = (
+    f"() => !!document.getElementById('reg-start') && {BAR}.dataset.probe === 'typing'"
+)
+OUT_OF_BAR = f"""() => !!document.getElementById('reg-start')
+    && document.activeElement !== document.body && !{BAR}.contains(document.activeElement)"""
+KEPT = "(n) => localStorage.getItem(BankingPage._fromKey(n))"
+
+
+def _type(page, keys):
+    for key in keys:
+        page.keyboard.press(key)
+
+
+def _tab_out_of_the_bar(page):
+    """Tab on, a stop at a time, until the keyboard has left the filter bar
+    (a date box takes several: its month, day, year and calendar)."""
+    for _ in range(20):
+        page.keyboard.press("Tab")
+        if page.evaluate(OUT_OF_BAR):
+            return
+    raise AssertionError("Tab never left the register's filter bar")
+
+
+def test_a_from_typed_a_key_at_a_time_applies_once_the_bar_is_left(browser):
+    """Chromium fires change on the first key that forms a whole date, and
+    the register was drawn again on it: 11 typed into the month gave
+    January and the rest went nowhere, and that From was kept (#663). The
+    date is typed whole and applies, and is kept, once the bar is left; the
+    keyboard goes on past the bar."""
+    page = _register_page(browser, [], "#/banking/1?start_date=2026-09-01")
+    try:
+        page.evaluate(MARK_BAR)
+        page.focus("#reg-start")  # the month
+        _type(page, "11152025")
+        assert page.input_value("#reg-start") == "2025-11-15"
+        assert page.evaluate(SAME_BAR), "drawn again while the date was typed"
+        assert (
+            page.evaluate("() => location.hash") == "#/banking/1?start_date=2026-09-01"
+        )
+        assert page.evaluate(KEPT, 1) == "2026-09-01"
+
+        _tab_out_of_the_bar(page)
+        page.wait_for_function(
+            "() => location.hash === '#/banking/1?start_date=2025-11-15'"
+            " && document.getElementById('reg-start').value === '2025-11-15'"
+        )
+        assert page.evaluate(KEPT, 1) == "2025-11-15"
+        assert "from Nov 15, 2025" in page.inner_text("#reg-filter-note")
+        # the register drawn again, the keyboard is past the bar, not lost
+        page.wait_for_function(OUT_OF_BAR)
+        assert page.evaluate(
+            "() => !!document.getElementById('reg-quick-entry').contains(document.activeElement)"
+        )
+    finally:
+        page.close()
+
+
+def test_an_empty_from_typed_a_key_at_a_time_is_not_year_0002(browser):
+    """An empty From had change as soon as the year's first digit made a
+    date: the register opened on Oct 1, 0002 and kept it (#663). Typed
+    whole, Enter applies it, and the keyboard stays in the box."""
+    page = _register_page(browser, [])
+    try:
+        page.evaluate(MARK_BAR)
+        page.focus("#reg-start")
+        _type(page, "10012026")
+        assert page.input_value("#reg-start") == "2026-10-01"
+        assert page.evaluate(SAME_BAR), "drawn again while the date was typed"
+        assert page.evaluate("() => location.hash") == "#/banking/1"
+        page.keyboard.press("Enter")
+        page.wait_for_function(
+            "() => location.hash === '#/banking/1?start_date=2026-10-01'"
+            f" && !{BAR}.dataset.probe"
+        )
+        assert page.input_value("#reg-start") == "2026-10-01"
+        assert page.evaluate(KEPT, 1) == "2026-10-01"
+        page.wait_for_function("() => document.activeElement.id === 'reg-start'")
+    finally:
+        page.close()
+
+
+def test_from_and_to_typed_one_after_the_other_apply_together(browser):
+    """From to To is staying in the bar: no drawing between them, so the
+    To being typed is not lost under one, and Enter applies both."""
+    page = _register_page(browser, [])
+    try:
+        page.evaluate(MARK_BAR)
+        page.focus("#reg-start")
+        _type(page, "09012026")
+        for _ in range(8):  # through From's parts to To's month
+            page.keyboard.press("Tab")
+            if page.evaluate("() => document.activeElement.id") == "reg-end":
+                break
+        assert page.evaluate("() => document.activeElement.id") == "reg-end"
+        _type(page, "09302026")
+        assert page.evaluate(SAME_BAR), "drawn again between From and To"
+        assert page.evaluate("() => location.hash") == "#/banking/1"
+        page.keyboard.press("Enter")
+        page.wait_for_function(
+            "() => location.hash === '#/banking/1?start_date=2026-09-01&end_date=2026-09-30'"
+        )
+        assert page.input_value("#reg-start") == "2026-09-01"
+        assert page.input_value("#reg-end") == "2026-09-30"
+        page.wait_for_function("() => document.activeElement.id === 'reg-end'")
+    finally:
+        page.close()
+
+
+PICK = """([sel, date]) => {
+    // what a pick from the calendar does: the box's value, then its
+    // input and change events
+    const box = document.querySelector(sel);
+    box.value = date;
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    box.dispatchEvent(new Event('change', { bubbles: true }));
+}"""
+
+
+def test_a_date_picked_from_the_calendar_applies_at_once(browser):
+    """A pick is no typing: it applies as it is made, as the other date
+    filters' changes do, even after keys were typed in the box (the press
+    on the box that opens the calendar ends the typing)."""
+    page = _register_page(browser, [], "#/banking/1?start_date=2026-09-01")
+    try:
+        page.evaluate(MARK_BAR)
+        page.focus("#reg-start")
+        _type(page, "08")  # the month typed, not applied
+        assert page.input_value("#reg-start") == "2026-08-01"
+        assert page.evaluate(SAME_BAR), "drawn again while the date was typed"
+        page.dispatch_event("#reg-start", "pointerdown")
+        page.evaluate(PICK, ["#reg-start", "2026-08-03"])
+        page.wait_for_function(
+            "() => location.hash === '#/banking/1?start_date=2026-08-03'"
+        )
+        assert page.input_value("#reg-start") == "2026-08-03"
+        # and To, with nothing typed in it
+        page.evaluate(PICK, ["#reg-end", "2026-08-31"])
+        page.wait_for_function(
+            "() => location.hash === '#/banking/1?start_date=2026-08-03&end_date=2026-08-31'"
+        )
+    finally:
+        page.close()
+
+
+def test_a_click_that_leaves_the_register_is_not_raced_by_the_dates(browser):
+    """A From typed and the page left with a click (Back): the register is
+    not drawn again over the page the click opened, and the From is not
+    kept; a click on the page itself applies it."""
+    page = _register_page(browser, [], "#/banking/1?start_date=2026-09-01")
+    try:
+        page.focus("#reg-start")
+        _type(page, "10012026")
+        page.locator("#page-content .page-header button", has_text="Back").click()
+        page.wait_for_function("() => location.hash === '#/banking'")
+        page.wait_for_timeout(300)  # a register drawn late would land by now
+        assert page.locator("#reg-start").count() == 0
+        assert page.evaluate("() => location.hash") == "#/banking"
+        assert page.evaluate(KEPT, 1) == "2026-09-01"
+
+        # typed, then a click on the page (not a control): it applies
+        _visit(page, "#/banking/1", "#reg-start[value='2026-09-01']")
+        page.focus("#reg-start")
+        _type(page, "10012026")
+        page.click("#page-content h2")
+        page.wait_for_function(
+            "() => location.hash === '#/banking/1?start_date=2026-10-01'"
+        )
+        assert page.evaluate(KEPT, 1) == "2026-10-01"
+    finally:
+        page.close()
