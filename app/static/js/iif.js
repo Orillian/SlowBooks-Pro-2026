@@ -145,7 +145,7 @@ const IIFPage = {
                         Adjusting entries only: an accountant's Transaction Detail by Account filtered to journal entries. Anything else in the file is refused, and what posts is marked adjusting.
                     </label>
                     <div>
-                        <button class="btn btn-primary" onclick="IIFPage.importQbReportCsv()">Import Report CSV</button>
+                        <button class="btn btn-primary" id="qbcsv-import-btn" onclick="IIFPage.importQbReportCsv()">Import Report CSV</button>
                     </div>
                     <div id="qbcsv-import-result" style="margin-top:12px;"></div>
                 </div>
@@ -245,7 +245,8 @@ const IIFPage = {
 
     _showQbResult(result) {
         const kindLabel = { sales_receipts: 'Sales Receipts', invoices: 'Invoices', sales_and_invoices: 'Sales Receipts and Invoices', deposits: 'Deposits', checks: 'Checks', ledger: 'Transaction Detail by Account', journals: 'Journal entries', time: 'Time by Name by Job detail', time_entries: 'Time entries', categorized: 'Categorized bank sheet', posted: 'Register entries', splits: 'Split entries' };
-        let html = '<div class="iif-results"><h4>Results</h4>';
+        // a place for focus after a file's answers are imported (#663)
+        let html = '<div class="iif-results"><h4 id="qbcsv-result-title" tabindex="-1">Results</h4>';
         if (result.detected) {
             html += `<div class="result-row"><span>Detected report</span><span class="result-count">${escapeHtml(result.report || kindLabel[result.detected] || result.detected)}</span></div>`;
         }
@@ -351,24 +352,29 @@ const IIFPage = {
             </section>`;
         }
         if (accounts.length) {
-            const rows = accounts.map(p => {
+            // One stop for Tab, as the other lists: the arrow keys move from
+            // row to row and Tab goes on to the row's type, then out. A box
+            // that cannot be ticked yet (no type) stays in the keyboard's
+            // way through the rows (aria-disabled, not disabled).
+            const rows = accounts.map((p, i) => {
                 // a sub-account's types are its parent's; one that can take
                 // none (an inactive parent) says why and cannot be made
                 const start = p.type && (!p.types || p.types.includes(p.type)) ? p.type : '';
                 const none = Array.isArray(p.types) && !p.types.length;
                 const options = IIFPage._typeOptions(result.account_types || [], p.types, start);
+                const tab = i ? -1 : 0;
                 return `<tr>
-                    <td class="qbr-pick-cell"><input type="checkbox" class="qbr-pick" data-kind="missing_account" data-key="${escapeHtml(p.key)}" aria-label="Make the account ${escapeHtml(p.path)}" aria-describedby="qbr-type-hint"${start ? '' : ' disabled'} onchange="IIFPage._reviewChanged()"></td>
+                    <td class="qbr-pick-cell"><input type="checkbox" class="qbr-pick" data-kind="missing_account" data-key="${escapeHtml(p.key)}" tabindex="${tab}" aria-label="Make the account ${escapeHtml(p.path)}" aria-describedby="qbr-type-hint"${start ? '' : ' aria-disabled="true"'} onclick="IIFPage._pickClick(event)" onchange="IIFPage._reviewChanged()"></td>
                     <td>${escapeHtml(p.path)}${none && p.why ? `<br><span class="qbr-hint">${escapeHtml(p.why)}</span>` : ''}</td>
                     <td class="amount">${Number(p.transactions).toLocaleString()}</td>
-                    <td><select class="qbr-type" data-no-search aria-label="Type for ${escapeHtml(p.path)}"${none ? ' disabled' : ''} onchange="IIFPage.reviewTyped(this)">${options}</select></td>
+                    <td><select class="qbr-type" data-no-search tabindex="${tab}" aria-label="Type for ${escapeHtml(p.path)}"${none ? ' disabled' : ''} onchange="IIFPage.reviewTyped(this)">${options}</select></td>
                 </tr>`;
             }).join('');
             html += `<section class="qbr-group" data-kind="missing_account" aria-labelledby="qbr-h-missing_account">
                 <h5 id="qbr-h-missing_account">${IIFPage._count(accounts.length, 'account')} not in the chart</h5>
-                <p class="qbr-note">${escapeHtml(notes.missing_account || '')} <span id="qbr-type-hint">An account is ticked once it has a type.</span></p>
+                <p class="qbr-note">${escapeHtml(notes.missing_account || '')} <span id="qbr-type-hint">An account is ticked once it has a type.</span> <span id="qbr-keys-hint-accounts">In the list, the arrow keys move from row to row, and Tab goes on to the row's type and then out of the list.</span></p>
                 ${IIFPage._bulk('missing_account', 'Accounts not in the chart')}
-                <div class="qbr-scroll"><table>
+                <div class="qbr-scroll qbr-roving"><table aria-describedby="qbr-keys-hint-accounts">
                     <thead><tr><th scope="col"><span class="visually-hidden">Make it</span></th><th scope="col">Account</th><th scope="col" class="amount">Transactions</th><th scope="col">Type</th></tr></thead>
                     <tbody>${rows}</tbody>
                 </table></div>
@@ -409,7 +415,8 @@ const IIFPage = {
             // one stop for Tab however long the list: the arrow keys move in it
             const rows = unbalanced.map((p, i) => {
                 const what = `${p.type}${p.num ? ` ${p.num}` : ''} of ${formatDate(p.date)}${p.name ? `, ${p.name}` : ''}`;
-                const off = formatCurrency(Math.abs(Number(p.off)));
+                // which side is over, not only how far (#663)
+                const off = IIFPage._offWords(p.off);
                 return `<tr>
                     <td class="qbr-pick-cell"><input type="checkbox" class="qbr-pick" data-kind="unbalanced" data-key="${escapeHtml(p.key)}" tabindex="${i ? -1 : 0}" aria-label="Import ${escapeHtml(what)}, off by ${escapeHtml(off)}" onchange="IIFPage._reviewChanged()"></td>
                     <td class="qbr-nowrap">${formatDate(p.date)}</td>
@@ -517,7 +524,8 @@ const IIFPage = {
     // ticked without one
     reviewTyped(select) {
         const box = select.closest('tr').querySelector('input.qbr-pick');
-        box.disabled = !select.value;
+        if (select.value) box.removeAttribute('aria-disabled');
+        else box.setAttribute('aria-disabled', 'true');
         box.checked = !!select.value;
         IIFPage._reviewChanged();
     },
@@ -555,11 +563,16 @@ const IIFPage = {
         return answers;
     },
 
+    // Focus goes to the result after Import, or back to Import when the
+    // answers were refused (the list stays), and to the button that began
+    // it all after Cancel: it fell to the page itself (#663).
     async importReviewed() {
         if (!IIFPage._qbReport) return;
         const button = $('#qbr-import');
         if (button) button.disabled = true;
         await IIFPage._sendQbReport(IIFPage._answers());
+        const done = $('#qbcsv-result-title');
+        (done || $('#qbr-import'))?.focus();
     },
 
     cancelReview() {
@@ -567,6 +580,7 @@ const IIFPage = {
         IIFPage._wide(false);
         $('#qbcsv-import-result').innerHTML = '';
         App.setStatus('Interoperability — Ready');
+        $('#qbcsv-import-btn')?.focus();
     },
 
     // the list takes the page's width while it is up: half of it squeezed

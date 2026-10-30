@@ -147,7 +147,8 @@ problems imports nothing yet (since 2.31.2): the page lists the problems,
 grouped, for you to tick the ones to accept and leave the rest:
 
 - **A transaction that does not balance**, with its date, type, number,
-  name, amount and how far off it is. Ticked, it posts with the difference
+  name, amount and how far off it is, and on which side ("$10.00 more in
+  debits"). Ticked, it posts with the difference
   on **3950 Import Differences**, an equity account made the first time it
   is needed, for you or your accountant to clear. Common causes: a report
   filtered to some accounts (set Filters → Account to All accounts), and a
@@ -170,8 +171,10 @@ grouped, for you to tick the ones to accept and leave the rest:
   are left out and the rest imports; to bring them in, move the closing
   date (Settings > Closing Date) and import the file again.
 
-Each list has Select all and Select none, and **Save the list** writes the
-problems to a text file to work from. **Import** sends the same file again
+Each list has Select all and Select none, and is one stop for Tab however
+long: the arrow keys move from row to row (in the accounts, Tab goes on to
+the row's type first). **Save the list** writes the problems to a text file
+to work from. **Import** sends the same file again
 with your answers: what checks out and what you accepted posts, and the
 result says how many were left out and why.
 

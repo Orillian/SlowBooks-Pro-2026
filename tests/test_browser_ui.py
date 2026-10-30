@@ -841,7 +841,7 @@ PROBLEM_LIST = """() => {
         groups: [...box.querySelectorAll('section.qbr-group h5')].map(h => h.textContent.trim()),
         notes: ['cut_off', 'missing_account', 'unbalanced'].map(k => group(k).querySelector('.qbr-note').textContent.trim().slice(0, 40)),
         ticked: Object.fromEntries(['cut_off', 'missing_account', 'unbalanced'].map(k => [k, picks(k).map(b => b.checked)])),
-        disabled: picks('missing_account').map(b => b.disabled),
+        disabled: picks('missing_account').map(b => b.disabled || b.getAttribute('aria-disabled') === 'true'),
         counts: [...box.querySelectorAll('.qbr-count')].map(c => c.textContent),
         importable: !document.getElementById('qbr-import').disabled,
         hint: document.getElementById('qbr-hint').textContent,
@@ -938,7 +938,7 @@ def test_a_ledger_files_problems_are_listed_and_answered(browser):
         assert page.evaluate(PROBLEM_LIST)["ticked"]["unbalanced"] == [False] * 3
         page.get_by_role(
             "checkbox",
-            name="Import Check 1002 of Jan 3, 2024, Harbor Properties, off by $10.00",
+            name="Import Check 1002 of Jan 3, 2024, Harbor Properties, off by $10.00 more in debits",
         ).check()
         page.get_by_role("checkbox", name="Import what is there").check()
         assert page.evaluate(PROBLEM_LIST)["importable"]
@@ -947,6 +947,8 @@ def test_a_ledger_files_problems_are_listed_and_answered(browser):
         )
         page.click("#qbr-import")
         page.wait_for_selector("#qbcsv-import-result .iif-results:not(.qbr)")
+        # focus goes to what was imported, not to the page (#663)
+        assert page.evaluate("() => document.activeElement.id") == "qbcsv-result-title"
         # the same file again, with the answers
         assert len(sent) == 2
         assert _form_field(sent[0], "answers") is None
@@ -997,15 +999,19 @@ def test_a_long_problem_list_is_one_stop_for_the_keyboard(browser):
     sent = []
     page = _problem_page(browser, sent)
     try:
+        # Off by says which side is over (#663), here the debits
+        assert page.inner_text(
+            "#qbr [data-kind=unbalanced] tbody tr td:last-child"
+        ) == ("$10.00 more in debits")
         group = page.locator("#qbr [data-kind=unbalanced]")
         group.get_by_role("button", name="Select none").focus()
         page.keyboard.press("Tab")
-        first = "Import Check 1001 of Jan 2, 2024, Harbor Properties, off by $10.00"
+        first = "Import Check 1001 of Jan 2, 2024, Harbor Properties, off by $10.00 more in debits"
         assert page.evaluate(FOCUSED) == first
         page.keyboard.press("ArrowDown")
         page.keyboard.press("ArrowDown")
         page.keyboard.press("Space")
-        third = "Import Check 1003 of Jan 4, 2024, Harbor Properties, off by $10.00"
+        third = "Import Check 1003 of Jan 4, 2024, Harbor Properties, off by $10.00 more in debits"
         assert page.evaluate(FOCUSED) == third
         assert page.evaluate(PROBLEM_LIST)["ticked"]["unbalanced"] == [
             False,
@@ -1023,7 +1029,7 @@ def test_a_long_problem_list_is_one_stop_for_the_keyboard(browser):
         assert page.evaluate(FOCUSED) == "Cancel"
         page.keyboard.press("Shift+Tab")
         assert page.evaluate(FOCUSED) == (
-            "Import Check 1002 of Jan 3, 2024, Harbor Properties, off by $10.00"
+            "Import Check 1002 of Jan 3, 2024, Harbor Properties, off by $10.00 more in debits"
         )
     finally:
         page.close()
@@ -1382,6 +1388,81 @@ def test_a_long_problem_list_draws_without_work_per_row_on_the_page(browser):
         page.close()
 
 
+def test_the_missing_accounts_are_one_stop_for_the_keyboard(browser):
+    """As the long lists are (#663): Tab enters the accounts at the row in
+    use, goes on to its type and then out; the arrow keys move between the
+    rows, a box with no type among them."""
+    sent = []
+    page = _problem_page(browser, sent, LEDGER_ACCOUNTS)
+    try:
+        group = page.locator("#qbr [data-kind=missing_account]")
+        group.get_by_role("button", name="Select none").focus()
+        page.keyboard.press("Tab")
+        assert page.evaluate(FOCUSED) == "Make the account Office Supplies:Toner"
+        page.keyboard.press("Tab")
+        assert page.evaluate(FOCUSED) == "Type for Office Supplies:Toner"
+        page.keyboard.press("Tab")
+        assert page.evaluate(FOCUSED) == "Import"  # out of the list
+        page.keyboard.press("Shift+Tab")
+        assert page.evaluate(FOCUSED) == "Type for Office Supplies:Toner"
+        page.keyboard.press("Shift+Tab")
+        page.keyboard.press("ArrowDown")
+        page.keyboard.press("ArrowDown")
+        # the third row's box cannot be ticked, and is still a stop
+        assert page.evaluate(FOCUSED) == "Make the account Old Expenses:Postage"
+        page.keyboard.press("Space")
+        assert not page.locator(
+            "#qbr input[data-key='Old Expenses:Postage']"
+        ).is_checked()
+        page.keyboard.press("ArrowUp")
+        assert page.evaluate(FOCUSED) == "Make the account Checking:Petty Cash"
+        page.keyboard.press("Space")
+        page.keyboard.press("Tab")
+        assert page.evaluate(FOCUSED) == "Type for Checking:Petty Cash"
+        page.keyboard.press("Tab")
+        assert page.evaluate(FOCUSED) == "Import"
+        assert group.locator("[data-count=missing_account]").inner_text() == (
+            "1 of 3 ticked"
+        )
+    finally:
+        page.close()
+
+
+def test_focus_stays_on_import_when_the_answers_are_refused(browser):
+    """The answers refused (the file changed, a type the chart's rules
+    refuse): the list stays, and so does focus, on Import."""
+    sent = []
+
+    def answer(route):
+        sent.append(route.request.post_data_buffer or b"")
+        if len(sent) == 1:
+            route.fulfill(json=LEDGER_ACCOUNTS)
+        else:
+            route.fulfill(
+                status=400,
+                json={
+                    "detail": "The file changed since the list was made; upload it again."
+                },
+            )
+
+    page = _open(browser, 1280, 800, "#/iif")
+    page.route("**/api/csv/import/qb-report", answer)
+    page.wait_for_selector("#qbcsv-file-input", state="attached")
+    page.set_input_files(
+        "#qbcsv-file-input",
+        files=[{"name": "t.csv", "mimeType": "text/csv", "buffer": b"x\r\n"}],
+    )
+    try:
+        page.evaluate("() => IIFPage.importQbReportCsv()")
+        page.wait_for_selector("#qbr")
+        page.click("#qbr-import")
+        page.wait_for_function("() => document.activeElement.id === 'qbr-import'")
+        assert page.is_visible("#qbr") and page.is_enabled("#qbr-import")
+        assert len(sent) == 2
+    finally:
+        page.close()
+
+
 def test_the_problem_list_reads_at_aa_in_both_themes(browser):
     from tests.test_theme_contrast import _theme, below_threshold, sweep_of
 
@@ -1397,10 +1478,12 @@ def test_the_problem_list_reads_at_aa_in_both_themes(browser):
             )
         assert all(sweeps.values()), sweeps
         assert below_threshold(sweeps) == []
-        # Cancel takes the list away; nothing was sent again
+        # Cancel takes the list away; nothing was sent again, and focus goes
+        # back to the button that began it, not to the page (#663)
         page.get_by_role("button", name="Cancel").click()
         assert page.inner_html("#qbcsv-import-result") == ""
         assert len(sent) == 1
+        assert page.evaluate(FOCUSED) == "Import Report CSV"
     finally:
         page.close()
 
