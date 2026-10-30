@@ -699,7 +699,7 @@ All payroll, HR, tax-form, and self-service portal endpoints are documented with
 |----------|---------|-------------|
 | `/api/journal` | GET, POST | Manual journal entry CRUD; an optional entry-level `basis` (`both` default, `accrual`, `cash`) says which reports the entry counts on (#483) |
 | `/api/journal/{id}` | GET, PUT | Get a journal entry with lines; PUT rewrites a hand-entered one in place from the register (a reconciled line's amount, account and the date refused, a non-reconciled account move 409 until `confirm_reconciled`; the accountant's sign-in does not edit) (part of #388) |
-| `/api/journal/{id}/void` | POST | Void with reversing entry |
+| `/api/journal/{id}/void` | POST | Void with reversing entry. A document's posting (an invoice's, a bill's, a payment's, a register entry's) is refused with a sentence naming the document to void instead, since its own void reverses it (#661) |
 | `/api/fixed-assets` | GET, POST, PUT | Fixed asset register (`acquisition` posts the purchase) |
 | `/api/fixed-assets/{id}/post-purchase` | POST | Post the purchase of an asset registered without one |
 

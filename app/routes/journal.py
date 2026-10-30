@@ -74,6 +74,33 @@ def _journal_sources() -> list[str]:
     ]
 
 
+# Documents whose own Void reverses their posting: the journal's void route
+# sends a caller there instead of reversing the posting a second time
+# (#661). Imported checks and late fees have no document of their own and
+# are still voided here (Possible Duplicates voids a check this way).
+_DOCUMENTS_WITH_A_VOID = frozenset(
+    {
+        "invoice",
+        "invoice_edit",
+        "payment",
+        "bill",
+        "bill_edit",
+        "bill_payment",
+        "expense",
+        "credit_memo",
+        "vendor_credit",
+        "deposit",
+        "bank_entry",
+        "transfer",
+        "cc_charge",
+        "in_kind_gift",
+        "job_deposit",
+        "functional_allocation",
+        "restriction_release",
+    }
+)
+
+
 def _voidable(txn, voided: bool) -> bool:
     """Whether the page may offer Void (the route decides for real): a
     journal of its own that is not a reversal and not voided already. An
@@ -592,6 +619,21 @@ def void_journal_entry(
             status_code=400,
             detail="An item's opening stock can't be voided here; correct it "
             "with an inventory adjustment on the item.",
+        )
+    if (txn.source_type or "") in _DOCUMENTS_WITH_A_VOID:
+        # A document's posting is voided with the document, whose own void
+        # does the whole job. Most write the reversal under the document's
+        # id, so the posting still looked unreversed below and a void here
+        # took it off the books a second time (#661). The page never offers
+        # Void on one.
+        from app.services.reclassify import source_label
+
+        label = source_label(txn.source_type).lower()
+        what = ("an " if label[:1] in "aeiou" else "a ") + label
+        raise HTTPException(
+            status_code=400,
+            detail=f"This is {what}'s posting, not a journal entry of its own. "
+            f"Void the {label} itself; that reverses this posting with it.",
         )
     acting = _acting(db)
     if _role(request) == ROLE_ACCOUNTANT and (txn.posted_by or "") != acting:
