@@ -21,12 +21,16 @@ the name, then ": " and the first memo when there was one; a name or memo may
 hold ":" or " — ", so a reading must also agree with the key and with the
 lines, which carry each memo or, with none, the name. An entry with no such
 reading, or more than one, is left as it was, and the import still finds its
-key in the reference. An entry rewritten gets the type its key starts with as
-its source_kind; one left as it was has none. Written out here so this
+key in the reference. An entry already in the new shape whose key a
+downgrade put back in the reference (its description the key's one name, or
+empty with a key that holds no name) gets its Num and key back the same
+way. An entry rewritten gets the type its key starts with as its
+source_kind; one left as it was has none. Written out here so this
 migration never changes with the importer.
 
 downgrade puts each key back in the reference, where the import looked for
-it before, and drops both columns; the descriptions keep the name.
+it before, and drops both columns; the descriptions keep the name, and an
+upgrade again reads those entries back as above.
 
 Revision ID: 4810bd59e481
 Revises: d7b3f9a1c5e2
@@ -189,6 +193,22 @@ def read_back(description, reference, day, line_texts):
     return found[0], split[1]
 
 
+def read_back_downgraded(description, reference, day):
+    """(name, num) of an entry the importer wrote in the new shape whose key
+    a downgrade put back in the reference: its description is the key's one
+    name, or empty with a key that holds none. None for anything else."""
+    key = reference or ""
+    stamp = f" · {str(day)[:10]}"
+    at = key.find(stamp)
+    split = split_head(key[:at]) if at > 0 else None
+    if split is None:
+        return None
+    base, name = key[: at + len(stamp)], description or ""
+    if key_fits(key, f"{base} · {name}" if name else base):
+        return name, split[1]
+    return None
+
+
 def type_of(reference, day):
     """QuickBooks' Type at the head of an entry's key, or None."""
     key = reference or ""
@@ -198,7 +218,8 @@ def type_of(reference, day):
 
 
 def rewrite(bind) -> int:
-    """Rewrite the entries the importer wrote before #663; how many."""
+    """Rewrite the entries the importer wrote before #663, and those a
+    downgrade put back; how many."""
     t, ln = _transactions, _lines
     old = (t.c.source_type == SOURCE_TYPE) & t.c.source_ref.is_(None)
     rows = bind.execute(
@@ -215,7 +236,9 @@ def rewrite(bind) -> int:
         texts[txn_id].append(text or "")
     changes = []
     for row in rows:
-        found = read_back(row.description, row.reference, row.date, texts[row.id])
+        found = read_back(
+            row.description, row.reference, row.date, texts[row.id]
+        ) or read_back_downgraded(row.description, row.reference, row.date)
         if found is None:
             continue
         name, num = found

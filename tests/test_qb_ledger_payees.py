@@ -651,3 +651,9 @@ def test_the_migration_rewrites_and_its_downgrade_puts_the_keys_back(tmp_path):
         1: ("Office Depot", "Check 1001 · 2024-01-08 · Office Depot"),
         2: entries[2],
     }
+    # and upgraded again, as the first upgrade left them
+    command.upgrade(cfg, REVISION)
+    assert stored("description", "reference", "source_ref", "source_kind") == {
+        1: ("Office Depot", "1001", "Check 1001 · 2024-01-08 · Office Depot", "Check"),
+        2: (*entries[2], None, None),
+    }

@@ -244,3 +244,51 @@ def test_what_the_upgrade_reads_as_the_type():
     assert type_of("Discount · 2026-03-02", day) == "Discount"
     assert type_of("Funds Moved 12 · 2026-03-02 · Acme", day) is None
     assert type_of("Check 9 · 2026-03-03 · Acme", day) is None
+
+
+def test_a_downgrade_and_the_upgrade_again_come_back_whole(
+    client, db_session, seed_accounts
+):
+    """The downgrade puts each key back in the reference and keeps the name
+    as the description; upgraded again, every entry reads back: the Num as
+    the reference, the key in source_ref, the Type in source_kind."""
+    _chart(db_session)
+    _upload(client, FIXTURE.read_bytes())
+    fresh = [
+        (t.id, t.description, t.reference, t.source_ref, t.source_kind)
+        for t in _imported(db_session)
+    ]
+    for txn in _imported(db_session):
+        txn.reference, txn.source_ref, txn.source_kind = txn.source_ref, None, None
+    db_session.commit()
+    assert _upgrade(db_session) == 8
+    assert [
+        (t.id, t.description, t.reference, t.source_ref, t.source_kind)
+        for t in _imported(db_session)
+    ] == fresh
+    assert _upgrade(db_session) == 0
+
+
+D = date(2026, 3, 2)
+LONG = "Northwind Property Management Group:Building 7 Lobby Renovation Phase 2"
+
+
+@pytest.mark.parametrize(
+    "description, key, expected",
+    [
+        ("Acme Supply", "Check EFT · 2026-03-02 · Acme Supply", ("Acme Supply", "EFT")),
+        ("", "General Journal AJE-3 · 2026-03-02", ("", "AJE-3")),
+        ("", "Transfer · 2026-03-02 #2", ("", "")),
+        ("Store", "Check · 2026-03-02 · Store #3", ("Store", "")),
+        (LONG, f"Bill Pmt -Check 10452 · 2026-03-02 · {LONG}"[:100], (LONG, "10452")),
+        # a name the key does not hold, a named key with no name, another day
+        ("Zenith", "Check 9 · 2026-03-02 · Acme", None),
+        ("", "Check 9 · 2026-03-02 · Acme", None),
+        ("Acme", "Check 9 · 2026-03-03 · Acme", None),
+        # two names (none in the key): not told apart from anything else
+        ("Ann Lee", "Deposit · 2026-03-02", None),
+        ("Funds Moved 12 — Acme", "Funds Moved 12 · 2026-03-02 · Acme", None),
+    ],
+)
+def test_what_the_upgrade_reads_back_after_a_downgrade(description, key, expected):
+    assert _migration().read_back_downgraded(description, key, D) == expected
