@@ -28,7 +28,9 @@ def test_the_entry_row_follows_the_entries_on_a_populated_register():
     populated = js[js.index("} else {", js.index("if (!reg.entries.length) {")) :][
         :2600
     ]
-    assert "</tbody>${filtered ? '' : quickRow}</table>" in populated
+    # under a date filter too (#663); a class filter puts a line in its place
+    assert "</tbody>${quickRow}</table>" in populated
+    assert "const quickRow = f.class_id ? BankingPage._entryRowOff()" in js
     # the brought-forward balance opens the oldest-first table (NEW-142)
     assert "<tbody>${opening}${rows}</tbody>" in populated
     # and the row's memo has a column of its own

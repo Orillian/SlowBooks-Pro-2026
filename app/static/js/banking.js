@@ -751,11 +751,16 @@ const BankingPage = {
         // payee, memo, category, ref, payment or deposit; Enter or Post
         // posts it through the same call as + Entry, and the next row is
         // ready. The list reads oldest to newest, as a ledger does, with the
-        // running balance down the right.
-        const quickRow = BankingPage._quickEntryRow(id, kind, chart, outLabel, inLabel);
+        // running balance down the right. A date filter keeps the row (#663:
+        // a register worked from the start of the month never showed it). A
+        // class filter puts a line in its place: the row has no class box, so
+        // its entry would post with none and leave the list, and the running
+        // balance above it counts that class's lines only.
+        const quickRow = f.class_id ? BankingPage._entryRowOff()
+            : BankingPage._quickEntryRow(id, kind, chart, outLabel, inLabel);
         if (!reg.entries.length) {
             html += `<div class="empty-state"><p>${filtered ? 'Nothing posted to this account for these filters' : 'Nothing posted to this account yet'}</p></div>`;
-            if (!filtered) html += `<div class="table-container"><table><thead><tr>
+            html += `<div class="table-container"><table><thead><tr>
                     <th scope="col">Date</th><th scope="col">Payee</th><th scope="col">Memo</th><th scope="col">Ref</th><th scope="col">Category</th>
                     <th scope="col" class="amount">${outLabel}</th><th scope="col" class="amount">${inLabel}</th><th scope="col" class="amount">Balance</th><th scope="col"></th><th scope="col"></th>
                 </tr></thead><tbody></tbody>${quickRow}</table></div>`;
@@ -776,14 +781,14 @@ const BankingPage = {
             // oldest first, so the balance brought forward (a start date's
             // doing) opens the table (2.23.5 round 2, NEW-142); the entry
             // row follows the entries on a populated register as on an
-            // empty one (W-14, NEW-140), unless the register is filtered
+            // empty one (W-14, NEW-140)
             const opening = f.start_date ? `<tr style="color:var(--gray-500);" id="reg-opening"><td>${formatDate(f.start_date)}</td><td colspan="6">Balance brought forward${reg.class_name ? ` (${escapeHtml(reg.class_name)})` : ''}</td><td class="amount">${formatCurrency(reg.opening_balance)}</td><td></td><td></td></tr>` : '';
             html += `<div class="table-container"><table>
                 <thead><tr>
                     <th scope="col">Date</th><th scope="col">Payee</th><th scope="col">Memo</th><th scope="col">Ref #</th><th scope="col">Type</th>
                     <th scope="col" class="amount">${outLabel}</th><th scope="col" class="amount">${inLabel}</th><th scope="col" class="amount">Balance</th>
                     <th scope="col" title="✓ cleared · R reconciled">✓</th><th scope="col"></th>
-                </tr></thead><tbody>${opening}${rows}</tbody>${filtered ? '' : quickRow}</table></div>`;
+                </tr></thead><tbody>${opening}${rows}</tbody>${quickRow}</table></div>`;
         }
         return html;
     },
@@ -1144,6 +1149,12 @@ const BankingPage = {
                 <tr data-write><td colspan="10" id="qe-category-host" style="padding:0; border:0;"></td></tr></tfoot>`;
     },
 
+    // In the entry row's place while a class is chosen (#663).
+    _entryRowOff() {
+        const cls = T('class').toLowerCase();
+        return `<tfoot><tr id="reg-quick-entry-off" data-write><td colspan="10" style="font-size:11px; color:var(--gray-500);">The entry row is hidden while a ${cls} is chosen: it has no ${cls} box, and the running balance counts this ${cls} only. Choose All ${T('classes').toLowerCase()} to use it, or post with + Entry.</td></tr></tfoot>`;
+    },
+
     // Enter in the quick row. As before, it posts the entry, unless the
     // preference "Enter moves between fields" is on (#480): then it moves
     // to the row's next field, and only Enter in the last amount (or Post)
@@ -1164,10 +1175,20 @@ const BankingPage = {
     // reloads the page. One register's date is not another's.
     _lastDate: {},
 
+    // An entry dated outside the register's From and To would leave the
+    // list without a word when it is drawn again: the toast says so (#663).
+    _outsideFilter(date) {
+        const f = BankingPage._regFilter;
+        if (date && f.start_date && date < f.start_date) return `Its date, ${formatDate(date)}, is before the From date, so the register does not show it.`;
+        if (date && f.end_date && date > f.end_date) return `Its date, ${formatDate(date)}, is after the To date, so the register does not show it.`;
+        return '';
+    },
+
     // The quick row posts through the same call as + Entry (#329): money
     // out from the left amount box, money in from the right one (a card's
     // charge and payment the same way), one of them; then the register
-    // redraws with the entry in place and the row ready for the next.
+    // redraws on its filter (#663) with the entry in place and the row
+    // ready for the next.
     async postQuickEntry(accountId) {
         const v = (sel) => (document.getElementById(sel) || {}).value || '';
         const out = parseFloat(v('qe-out') || '0'), inn = parseFloat(v('qe-in') || '0');
@@ -1195,9 +1216,10 @@ const BankingPage = {
                 document.getElementById('qe-ref'));
             if (!posted) return;
             BankingPage._lastDate[accountId] = data.date;
-            toastPosted('Entry posted');
+            const outside = BankingPage._outsideFilter(data.date);
+            toastPosted(outside ? `Entry posted. ${outside}` : 'Entry posted');
             BankingPage.payeeTyped(data.payee, inn > 0, 'qe-payee');
-            await BankingPage.go(`#/banking/${accountId}`);
+            await BankingPage.go(BankingPage._regUrl(accountId));
             BankingPage._focusPayee();
         } catch (err) { toast(err.message, 'error'); }
     },

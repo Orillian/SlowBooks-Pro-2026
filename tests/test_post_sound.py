@@ -90,10 +90,16 @@ def test_the_posting_paths_ring_and_the_rest_stay_silent():
     assert "toastPosted(form.is_adjusting" in (js / "journal.js").read_text(
         encoding="utf-8"
     )
-    # the register's quick row and its entry form
-    assert (js / "banking.js").read_text(encoding="utf-8").count(
-        "toastPosted('Entry posted')"
-    ) == 2
+    # the register's quick row and its entry form; the row's says in the
+    # same toast when the entry is dated outside the register's dates (#663)
+    banking = (js / "banking.js").read_text(encoding="utf-8")
+    assert banking.count("toastPosted('Entry posted')") == 1
+    assert (
+        banking.count(
+            "toastPosted(outside ? `Entry posted. ${outside}` : 'Entry posted')"
+        )
+        == 1
+    )
     for name, call in _SILENT.items():
         src = (js / name).read_text(encoding="utf-8")
         assert call in src, name

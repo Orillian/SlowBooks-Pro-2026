@@ -2,8 +2,10 @@
 (#566, from discussion #561). After a post the quick row and the + Entry
 dialog open with the date just posted — per register, for the page's life
 — and + / - step any date box a day, T is today. The #481 far-date
-question is asked for a date typed, not for one carried over. The API is
-stubbed; the page is the real one (tests/test_browser_ui.py's fixtures)."""
+question is asked for a date typed, not for one carried over. The entry
+row stays under a date filter, and a post from it keeps the dates (#663).
+The API is stubbed; the page is the real one (tests/test_browser_ui.py's
+fixtures)."""
 
 import datetime as dt
 
@@ -16,21 +18,28 @@ from tests.test_browser_ui import _open  # noqa: E402
 from tests.test_theme_contrast import browser_fixture  # noqa: E402,F401  (the fixture)
 
 
-def _register_page(browser, posted):
-    """The Checking register (#/banking/1) with the post stubbed; `posted`
-    collects the bodies sent."""
+def _register_page(browser, posted, at="#/banking/1", register=None):
+    """The Checking register (#/banking/1, or the address `at`) with the
+    post stubbed; `posted` collects the bodies sent. The register's GET
+    answers `register`, which a test may change as it goes."""
 
     def _transactions(route):
         posted.append(route.request.post_data_json)
         route.fulfill(status=201, json={"id": len(posted)})
 
+    reg = REGISTER if register is None else register
     page = _open(browser, 1280, 800, "#/")
-    page.route("**/api/banking/check-register*", lambda r: r.fulfill(json=REGISTER))
+    page.route("**/api/banking/check-register*", lambda r: r.fulfill(json=reg))
     page.route("**/api/accounts*", lambda r: r.fulfill(json=CHART))
     page.route("**/api/banking/transactions", _transactions)
-    page.goto(page.url.split("#")[0] + "#/banking/1")
-    page.wait_for_selector("#qe-category")
+    page.goto(page.url.split("#")[0] + at)
+    page.wait_for_selector("#reg-start")
     return page
+
+
+def _visit(page, at, ready):
+    page.goto(page.url.split("#")[0] + at)
+    page.wait_for_selector(ready)
 
 
 def _post_quick(page, date, amount="25"):
@@ -180,5 +189,123 @@ def test_minus_still_types_a_minus_in_the_amount_boxes(browser):
         assert (
             page.input_value("#modal-body [name='date']") == dt.date.today().isoformat()
         )
+    finally:
+        page.close()
+
+
+# ── #663: the entry row under a filter, and a post that keeps the dates ──
+
+OCT_ENTRY = {
+    "line_id": 11,
+    "transaction_id": 11,
+    "date": "2026-10-05",
+    "description": "Fuel",
+    "payee": "Shell",
+    "reference": "",
+    "source_type": "bank_entry",
+    "source_link": None,
+    "amount": -25.0,
+    "debit": 0,
+    "credit": 25.0,
+    "payment": 25.0,
+    "deposit": 0,
+    "balance": -25.0,
+    "cleared": False,
+    "reconciliation_id": None,
+    "editable": True,
+    "printable": False,
+    "voided": False,
+    "voidable": True,
+}
+
+ROW_UNDER_ENTRIES = """() => {
+    const row = document.getElementById('reg-quick-entry');
+    const table = row && row.closest('table');
+    return !!table && table.tBodies[0].textContent.includes('Shell');
+}"""
+
+
+def test_the_entry_row_stays_under_a_date_filter_not_a_class_one(browser):
+    """Any From, To or class hid the entry row, so a register always worked
+    from the start of the month never showed it (#663). A date filter keeps
+    it, with entries in the range or none yet; a class filter puts a line
+    in its place, since the row has no class box and the running balance
+    counts that class only."""
+    register = {**REGISTER, "entries": []}
+    page = _register_page(browser, [], "#/banking/1?start_date=2026-10-01", register)
+    try:
+        # nothing in the range yet: said, and the row is there for the first
+        assert "Nothing posted to this account for these filters" in page.inner_text(
+            "#page-content"
+        )
+        assert page.locator("#reg-quick-entry").count() == 1
+
+        # entries in the range: the row follows them
+        register["entries"] = [OCT_ENTRY]
+        _visit(
+            page,
+            "#/banking/1?start_date=2026-10-01&end_date=2026-10-31",
+            "#reg-opening",
+        )
+        assert page.evaluate(ROW_UNDER_ENTRIES)
+
+        # a class: the line says why there is no row, and All classes brings it back
+        register["class_name"] = "Unassigned"
+        _visit(
+            page, "#/banking/1?start_date=2026-10-01&class_id=1", "#reg-quick-entry-off"
+        )
+        assert page.locator("#reg-quick-entry").count() == 0
+        assert page.inner_text("#reg-quick-entry-off") == (
+            "The entry row is hidden while a class is chosen: it has no class box,"
+            " and the running balance counts this class only. Choose All classes"
+            " to use it, or post with + Entry."
+        )
+        page.select_option("#reg-class", "")
+        page.wait_for_selector("#reg-quick-entry")
+        assert (
+            page.evaluate("() => location.hash") == "#/banking/1?start_date=2026-10-01"
+        )
+
+        # and an empty register under a class says it in the same place
+        register["entries"] = []
+        _visit(page, "#/banking/1?class_id=1", "#reg-quick-entry-off")
+        assert page.locator("#reg-quick-entry").count() == 0
+    finally:
+        page.close()
+
+
+def _toast_with(page, words):
+    page.locator("#toast-container .toast", has_text=words).first.wait_for()
+
+
+def test_a_post_from_the_row_keeps_the_dates_and_says_when_it_falls_outside(browser):
+    """The row's post went back to the register's bare address, which
+    dropped the dates (#663). It keeps them; an entry dated before From or
+    after To, which the list leaves out, is said so in the toast."""
+    posted = []
+    at = "#/banking/1?start_date=2026-10-01&end_date=2026-10-31"
+    page = _register_page(browser, posted, at)
+    try:
+        _post_quick(page, "2026-10-12")
+        assert posted[-1]["date"] == "2026-10-12"
+        assert page.evaluate("() => location.hash") == at
+        assert page.input_value("#reg-start") == "2026-10-01"
+        assert page.input_value("#reg-end") == "2026-10-31"
+        assert page.locator("#toast-container .toast", has_text="show it").count() == 0
+
+        _post_quick(page, "2026-09-28")
+        _toast_with(
+            page,
+            "Entry posted. Its date, Sep 28, 2026, is before the From date,"
+            " so the register does not show it.",
+        )
+        _post_quick(page, "2026-11-02")
+        _toast_with(
+            page,
+            "Entry posted. Its date, Nov 2, 2026, is after the To date,"
+            " so the register does not show it.",
+        )
+        assert posted[-1]["date"] == "2026-11-02"
+        assert page.evaluate("() => location.hash") == at
     finally:
         page.close()

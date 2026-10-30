@@ -18,7 +18,8 @@ def test_go_resolves_once_the_page_is_drawn_and_the_cursor_lands_in_payee():
     assert "return App.navigate(hash);" in body
     assert "location.hash = hash" not in js
     post = js[js.index("async postQuickEntry(accountId) {") :][:2000]
-    assert "await BankingPage.go(`#/banking/${accountId}`);" in post
+    # on the register's own filter (#663)
+    assert "await BankingPage.go(BankingPage._regUrl(accountId));" in post
     assert "BankingPage._focusPayee();" in post
     focus = js[js.index("_focusPayee(tries = 20) {") :][:800]
     assert "document.activeElement !== next" in focus
