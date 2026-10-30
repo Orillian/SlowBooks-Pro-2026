@@ -632,18 +632,45 @@ const BankingPage = {
 
     // The From date each register was last read from (#663), so one worked
     // from the start of the month opens there, the date in its From box.
-    // Kept in this browser, as a list keeps its Show choice, by sign-in and
-    // company (whose it is, as the Recent list keys its own) and account;
-    // Clear, or a From emptied, forgets it.
+    // Kept in this browser, as a list keeps its Show choice, by sign-in,
+    // company and account; Clear, or a From emptied, forgets it. The
+    // company is the file (or database) the server says is open
+    // (/api/companies, asked once a page load): account ids start again in
+    // every company file, a rename leaves the file as it was, and a company
+    // with no name yet, or still called My Company, has one too, where
+    // /api/auth/status names neither. Failing a file, the company's name
+    // (whose it is, as the Recent list keys its own); a company with
+    // neither keeps no From, so two of them never share one.
+    _companyFile: null,
+    _companyAsked: null,
+    _openCompany() {
+        if (!BankingPage._companyAsked) {
+            BankingPage._companyAsked = Promise.resolve()
+                .then(() => API.get('/companies'))
+                .then(list => {
+                    const open = (Array.isArray(list) ? list : []).find(c => c && c.is_current);
+                    return open ? String(open.file || open.database_name || '') : '';
+                })
+                .catch(() => '')
+                .then(file => { BankingPage._companyFile = file; return file; });
+        }
+        return BankingPage._companyAsked;
+    },
     _fromKey(id) {
         const owner = (typeof App !== 'undefined' && App._tabsOwner) || '';
-        return `slowbooks-register-from:${owner}:${id}`;
+        const bar = owner.indexOf('|');  // "user|company name"; a username has no |
+        const user = bar < 0 ? '' : owner.slice(0, bar);
+        const name = bar < 0 ? owner : owner.slice(bar + 1);
+        const file = BankingPage._companyFile;
+        const company = file ? `file:${file}` : name ? `name:${name}` : '';
+        return company ? `slowbooks-register-from:${user}|${company}:${id}` : null;
     },
     // A From kept for a day after today is not used: it would open the
     // register on nothing yet, wherever the link came from.
     _lastFrom(id) {
         try {
-            const v = localStorage.getItem(BankingPage._fromKey(id)) || '';
+            const key = BankingPage._fromKey(id);
+            const v = (key && localStorage.getItem(key)) || '';
             return BankingPage._likelyDate(v) && v <= todayISO() ? v : '';
         } catch (e) { return ''; }
     },
@@ -652,8 +679,10 @@ const BankingPage = {
     // before it stays.
     _keepFrom(id, date) {
         try {
-            if (!date) localStorage.removeItem(BankingPage._fromKey(id));
-            else if (BankingPage._likelyDate(date) && date <= todayISO()) localStorage.setItem(BankingPage._fromKey(id), date);
+            const key = BankingPage._fromKey(id);
+            if (!key) return;
+            if (!date) localStorage.removeItem(key);
+            else if (BankingPage._likelyDate(date) && date <= todayISO()) localStorage.setItem(key, date);
         } catch (e) { /* not kept: the next visit opens on every date */ }
     },
 
@@ -912,6 +941,7 @@ const BankingPage = {
         const id = parseInt(accountId, 10);
         const drawing = ++BankingPage._drawing;
         const q = query || {};
+        await BankingPage._openCompany();  // whose From is kept
         const f = BankingPage._regFilterFrom(q);
         // no dates in the address: the From date this register was last
         // read from (#663); a From in the address is the one kept

@@ -19,10 +19,11 @@ from tests.test_browser_ui import _open  # noqa: E402
 from tests.test_theme_contrast import browser_fixture  # noqa: E402,F401  (the fixture)
 
 
-def _register_page(browser, posted, at="#/banking/1", register=None):
+def _register_page(browser, posted, at="#/banking/1", register=None, companies=None):
     """The Checking register (#/banking/1, or the address `at`) with the
     post stubbed; `posted` collects the bodies sent. The register's GET
-    answers `register`, which a test may change as it goes."""
+    answers `register`, which a test may change as it goes; the company
+    list answers `companies` (a list a test may change), else none."""
 
     def _transactions(route):
         posted.append(route.request.post_data_json)
@@ -30,6 +31,8 @@ def _register_page(browser, posted, at="#/banking/1", register=None):
 
     reg = REGISTER if register is None else register
     page = _open(browser, 1280, 800, "#/")
+    if companies is not None:
+        page.route("**/api/companies", lambda r: r.fulfill(json=companies))
     page.route("**/api/banking/check-register*", lambda r: r.fulfill(json=reg))
     page.route("**/api/accounts*", lambda r: r.fulfill(json=CHART))
     page.route("**/api/banking/transactions", _transactions)
@@ -948,5 +951,74 @@ def test_a_from_after_today_is_not_kept_nor_used(browser):
         )
         _open_register(page, 4, "")
         _open_register(page, 1, today.isoformat())
+    finally:
+        page.close()
+
+
+def _reload(page):
+    """A new page load (a company switch reloads the page)."""
+    page.goto(page.url.split("#")[0] + "#/")
+    page.reload()
+    page.wait_for_function("window.App && document.readyState === 'complete'")
+    page.evaluate(
+        "() => { const s = document.getElementById('splash'); if (s) s.classList.add('hidden'); }"
+    )
+
+
+def test_the_from_kept_is_the_company_files_not_its_names(browser):
+    """The From was kept by the company's name, as /api/auth/status gives
+    it (#663): "" for a company with no name yet or still called My
+    Company, so two of those shared one, while account ids start again in
+    every company file and a rename dropped the dates. It is kept by the
+    file the server says is open; with no file and no name, none is."""
+    companies = [
+        {"name": "Harbor Light Bakery Two", "file": "harbor.db", "is_current": True},
+        {"name": "", "file": "unnamed.db", "is_current": False},
+    ]
+    page = _register_page(
+        browser, [], "#/banking/1?start_date=2026-09-01", companies=companies
+    )
+    try:
+        # renamed: the same file, the same From
+        page.evaluate("() => { App._tabsOwner = '|Harbor Light Bakery Renamed'; }")
+        _open_register(page, 4, "")
+        _open_register(page, 1, "2026-09-01")
+        assert page.evaluate("() => BankingPage._fromKey(1)").endswith(
+            "|file:harbor.db:1"
+        )
+
+        # another file, with no name: not this one's From, and its own kept
+        companies[0]["is_current"], companies[1]["is_current"] = False, True
+        page.route(
+            "**/api/auth/status",
+            lambda r: r.fulfill(
+                json={"authenticated": True, "multi_user": False, "company_name": ""}
+            ),
+        )
+        _reload(page)
+        _open_register(page, 1, "")
+        page.fill("#reg-start", "2026-08-01")
+        page.wait_for_function(
+            "() => location.hash === '#/banking/1?start_date=2026-08-01'"
+        )
+        companies[0]["is_current"], companies[1]["is_current"] = True, False
+        _reload(page)
+        _open_register(page, 1, "2026-09-01")
+
+        # no file named and no name: nothing is kept, under any key
+        companies.clear()
+        _reload(page)
+        assert page.evaluate("() => BankingPage._fromKey(1)") is None
+        _open_register(page, 1, "")
+        page.fill("#reg-start", "2026-07-01")
+        page.wait_for_function(
+            "() => location.hash === '#/banking/1?start_date=2026-07-01'"
+        )
+        _open_register(page, 4, "")
+        _open_register(page, 1, "")
+        assert page.evaluate(
+            "() => Object.keys(localStorage).filter(k => k.startsWith('slowbooks-register-from:'))"
+            ".map(k => k.split(':').slice(1).join(':')).sort()"
+        ) == ["|file:harbor.db:1", "|file:unnamed.db:1"]
     finally:
         page.close()
