@@ -458,10 +458,11 @@ def account_register(
                 "date": txn.date.isoformat(),
                 # a register entry's memo lives on its lines, its payee on
                 # the entry: the Memo column shows the memo when there is
-                # one, else the payee (2.23.5 round 2, W-14)
+                # one, else the payee (2.23.5 round 2, W-14). A QuickBooks
+                # Desktop ledger import is kept the same way (#663).
                 "description": (
                     tl.description
-                    if txn.source_type == "bank_entry"
+                    if txn.source_type in ("bank_entry", "qb_ledger_import")
                     and tl.description
                     and tl.description != payees.get(txn.id, "")
                     else (txn.description or tl.description or "")

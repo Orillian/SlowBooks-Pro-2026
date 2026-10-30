@@ -118,9 +118,10 @@ def test_the_report_comes_across_as_balanced_journals(
     assert _net(db_session, "Supplies", "Office Expense") == Decimal("45.00")
     assert _net(db_session, "Software", "Office Expense") == Decimal("30.00")
     assert _net(db_session, "Card Fees") == Decimal("25.00")
-    check = next(t for t in journals if t.reference.startswith("Check 1001"))
+    # QuickBooks' Num is the reference, its Name the payee (#663)
+    check = next(t for t in journals if t.reference == "1001")
     assert (
-        check.date.isoformat() == "2024-01-08" and "Office Depot" in check.description
+        check.date.isoformat() == "2024-01-08" and check.description == "Office Depot"
     )
     assert len(check.lines) == 3
 

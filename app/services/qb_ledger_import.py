@@ -330,7 +330,11 @@ def _combine_split_numbers(loose: list[list[dict]], off) -> list[list[dict]]:
     return joined
 
 
-def _reference(journal: list[dict], seen: dict) -> str:
+def _import_key(journal: list[dict], seen: dict) -> str:
+    """The journal's key, what a second upload checks: type, number, date
+    and its one name, numbered when a key repeats in the file. It was the
+    reference until #663 and kept its form, so a file imported before still
+    matches."""
     first = journal[0]
     base = f"{first['type']} {first['num']}".strip() + f" · {first['date']:%Y-%m-%d}"
     names = {ln["name"] for ln in journal if ln["name"]}
@@ -439,9 +443,11 @@ def import_ledger_report(
         # The page counts them and saves the list as a file.
         result["errors"] = errors
         return result
+    # each entry's key: its source_ref, else (an entry the 2.31.2 upgrade
+    # could not read back) the reference that held it before
     have = {
-        ref
-        for (ref,) in db.query(Transaction.reference).filter(
+        key or ref
+        for key, ref in db.query(Transaction.source_ref, Transaction.reference).filter(
             Transaction.source_type == SOURCE_TYPE
         )
     }
@@ -454,18 +460,12 @@ def import_ledger_report(
     except Exception:
         control = set()
     for journal in journals:
-        ref = _reference(journal, seen)
-        if ref in have:
+        key = _import_key(journal, seen)
+        if key in have:
             result["duplicates_skipped"] += 1
             continue
         first = journal[0]
         names = [ln["name"] for ln in journal if ln["name"]]
-        memos = [ln["memo"] for ln in journal if ln["memo"]]
-        description = (
-            f"{first['type']} {first['num']}".strip()
-            + (f" — {names[0]}" if names else "")
-            + (f": {memos[0]}" if memos else "")
-        )[:200]
         posted = [
             {
                 "account_id": accounts[ln["path"]].id,
@@ -477,17 +477,21 @@ def import_ledger_report(
         ]
         if any(p["account_id"] in control for p in posted):
             touches_control += 1
+        # as a register entry reads (#663): QuickBooks' Name is the payee
+        # (none on an entry with no name), its Num the reference, each
+        # line's Memo on the line
         create_journal_entry(
             db,
             first["date"],
-            description,
+            (names[0] if names else "")[:200],
             posted,
             source_type=SOURCE_TYPE,
-            reference=ref,
+            reference=first["num"][:100] or None,
             is_adjusting=bool(adjusting_only),
             posted_by=posted_by,
+            source_ref=key,
         )
-        have.add(ref)
+        have.add(key)
         result["journals"] += 1
     if touches_control:
         result["warnings"].append(

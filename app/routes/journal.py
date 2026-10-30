@@ -653,7 +653,7 @@ def void_journal_entry(
                 txn.date,
                 # the reversal of an adjustment says so, and is one (#341)
                 ("VOID adjusting entry: " if txn.is_adjusting else "VOID: ")
-                + (txn.description or ""),
+                + header_text(txn),
                 reverse_lines,
                 # A QuickBooks Online import posting is reversed under its own
                 # name, so a later import knows it was voided here.
