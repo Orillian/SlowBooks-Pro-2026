@@ -1305,6 +1305,83 @@ def test_a_sub_account_is_offered_the_types_its_parent_takes(browser):
         page.close()
 
 
+def test_a_long_problem_list_draws_without_work_per_row_on_the_page(browser):
+    """15,000 rows took 105 s to draw and 134 ms an arrow key (#663). The
+    causes, each now absent: the app's field namer read each new box's
+    `labels` (a walk of the whole document) before its aria-label; every
+    date and amount built an Intl formatter; a box went from static to
+    relative positioning as it took focus (the focus ring's rule), which
+    relaid the whole table out; and each move rewrote every row's
+    tabIndex."""
+    import copy
+
+    big = copy.deepcopy(LEDGER_PROBLEMS)
+    big["problems"] = [p for p in big["problems"] if p["kind"] != "unbalanced"] + [
+        {
+            "kind": "unbalanced",
+            "key": f"Check {1001 + i} · 2024-01-02 · Northwind",
+            "date": "2024-01-02",
+            "type": "Check",
+            "num": str(1001 + i),
+            "name": "Northwind",
+            "amount": "1010.00",
+            "off": "10.00",
+            "rows": [8 + i],
+            "text": f"Check {1001 + i} does not balance",
+        }
+        for i in range(200)
+    ]
+    page = _open(browser, 1280, 800, "#/iif")
+    page.route("**/api/csv/import/qb-report", lambda route: route.fulfill(json=big))
+    page.wait_for_selector("#qbcsv-file-input", state="attached")
+    page.set_input_files(
+        "#qbcsv-file-input",
+        files=[{"name": "t.csv", "mimeType": "text/csv", "buffer": b"x\r\n"}],
+    )
+    try:
+        counts = page.evaluate("""async () => {
+                const counts = { labels: 0, numberFormats: 0, dateStrings: 0 };
+                const labels = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'labels');
+                Object.defineProperty(HTMLInputElement.prototype, 'labels', {
+                    configurable: true,
+                    get() {
+                        // a box named by its aria-label (the notice's is
+                        // named by its own <label>, and read as before)
+                        if (this.classList.contains('qbr-pick') && this.hasAttribute('aria-label')) counts.labels++;
+                        return labels.get.call(this);
+                    },
+                });
+                const NumberFormat = Intl.NumberFormat;
+                Intl.NumberFormat = function (...a) { counts.numberFormats++; return new NumberFormat(...a); };
+                const toDate = Date.prototype.toLocaleDateString;
+                Date.prototype.toLocaleDateString = function (...a) { counts.dateStrings++; return toDate.apply(this, a); };
+                await IIFPage.importQbReportCsv();
+                await new Promise(r => setTimeout(r, 0));  // the namer's turn
+                return counts;
+            }""")
+        assert counts == {"labels": 0, "numberFormats": 0, "dateStrings": 0}
+        assert page.evaluate("""() => getComputedStyle(document.querySelector(
+                '#qbr input.qbr-pick[data-kind=unbalanced]')).position""") == "relative"
+        group = page.locator("#qbr [data-kind=unbalanced]")
+        group.get_by_role("button", name="Select none").focus()
+        page.keyboard.press("Tab")
+        page.evaluate("""() => {
+                window.__touched = new Set();
+                new MutationObserver(records => records.forEach(r => window.__touched.add(r.target)))
+                    .observe(document.getElementById('qbr'), { attributes: true, attributeFilter: ['tabindex'], subtree: true });
+            }""")
+        page.keyboard.press("ArrowDown")
+        page.keyboard.press("End")
+        touched = page.evaluate(
+            """() => new Promise(r => setTimeout(() => r(
+                [...window.__touched].map(b => b.closest('tr').sectionRowIndex)), 0))"""
+        )
+        assert sorted(touched) == [0, 1, 199]
+        assert page.evaluate("() => document.activeElement.tabIndex") == 0
+    finally:
+        page.close()
+
+
 def test_the_problem_list_reads_at_aa_in_both_themes(browser):
     from tests.test_theme_contrast import _theme, below_threshold, sweep_of
 

@@ -443,6 +443,8 @@ const IIFPage = {
         IIFPage._wide(true);
         $('#qbcsv-import-result').innerHTML = html;
         for (const list of document.querySelectorAll('#qbr .qbr-roving')) {
+            // the row Tab comes back in at, kept so a move touches two rows
+            list._row = list.querySelector('tbody tr');
             list.addEventListener('keydown', IIFPage._listKeys);
             list.addEventListener('focusin', IIFPage._listFocus);
         }
@@ -452,26 +454,42 @@ const IIFPage = {
     },
 
     // Up and Down, Home and End, between a long list's boxes: Tab enters
-    // the list at the row last used and leaves it.
+    // the list at the row last used and leaves it. Each move goes to the
+    // next row, or the first or last, by the rows themselves: a list of
+    // 15,000 was copied into an array on every key (#663).
     _listKeys(event) {
         const moves = { ArrowDown: 1, ArrowUp: -1, Home: 'first', End: 'last' };
         const from = event.target;
         if (!(event.key in moves) || !from.matches('input.qbr-pick')) return;
         event.preventDefault();
-        const boxes = [...event.currentTarget.querySelectorAll('input.qbr-pick')];
+        const row = from.closest('tr');
+        const body = row && row.parentElement;
+        if (!body) return;
         const move = moves[event.key];
-        const at = boxes.indexOf(from);
-        const to = boxes[move === 'first' ? 0 : move === 'last' ? boxes.length - 1
-            : Math.max(0, Math.min(boxes.length - 1, at + move))];
-        if (to && to !== from) to.focus();
+        const to = move === 'first' ? body.firstElementChild
+            : move === 'last' ? body.lastElementChild
+                : (move > 0 ? row.nextElementSibling : row.previousElementSibling) || row;
+        const box = to && to.querySelector('input.qbr-pick');
+        if (box && box !== from) box.focus();
     },
 
-    // the row in use, by keyboard or mouse, is where Tab comes back in
+    // A row's own controls, in the Tab order while it is the row in use.
+    _ROW_CONTROLS: 'input.qbr-pick, select.qbr-type',
+
+    // The row in use, by keyboard or mouse, is where Tab comes back in: its
+    // controls take Tab, and the row before it gives it back. Two rows are
+    // touched, not every row (every tabIndex was rewritten on each move,
+    // 134 ms a key at 15,000, #663).
     _listFocus(event) {
-        const box = event.target;
-        if (!box.matches('input.qbr-pick') || box.tabIndex === 0) return;
-        for (const other of event.currentTarget.querySelectorAll('input.qbr-pick')) other.tabIndex = -1;
-        box.tabIndex = 0;
+        if (!event.target.matches(IIFPage._ROW_CONTROLS)) return;
+        const row = event.target.closest('tr');
+        const list = event.currentTarget;
+        if (!row || list._row === row) return;
+        if (list._row) {
+            for (const c of list._row.querySelectorAll(IIFPage._ROW_CONTROLS)) c.tabIndex = -1;
+        }
+        for (const c of row.querySelectorAll(IIFPage._ROW_CONTROLS)) c.tabIndex = 0;
+        list._row = row;
     },
 
     _picks(kind) {

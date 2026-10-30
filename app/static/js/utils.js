@@ -6,8 +6,13 @@
 function $(sel, parent = document) { return parent.querySelector(sel); }
 function $$(sel, parent = document) { return [...parent.querySelectorAll(sel)]; }
 
+// One formatter each, made once: a new Intl formatter per call cost a list
+// of thousands of rows seconds to draw (#663).
+const _CURRENCY = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+const _SHORT_DATE = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
 function formatCurrency(amount) {
-    return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount || 0);
+    return _CURRENCY.format(amount || 0);
 }
 
 // A file's size for a person: "18 bytes", "4.2 KB", "1.3 MB". Everything
@@ -42,7 +47,7 @@ function formatDate(dateStr) {
         ? new Date(dateStr)
         : new Date(dateStr + 'T00:00:00');
     if (Number.isNaN(d.getTime())) return 'Invalid date';
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    return _SHORT_DATE.format(d);  // what toLocaleDateString gave, made once
 }
 
 // A posting's kind in the app's words rather than its source_type key: a
@@ -1998,8 +2003,13 @@ async function copyToClipboard(text, label = 'Text', el = null) {
 const _FIELD_SEL = 'input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=reset]), select, textarea';
 let _fieldSeq = 0;
 
+// Whether a field is named already: its aria-label or aria-labelledby, or
+// a <label>. The attributes are read first: el.labels walks the whole
+// document in Chromium, so on a page of thousands of named fields (a ledger
+// file's problem list, #663) reading it first made every draw quadratic.
+// Only the order changed; a field named either way is still named.
 function _ownName(el) {
-    return (el.labels && el.labels.length) || el.getAttribute('aria-label') || el.getAttribute('aria-labelledby');
+    return el.getAttribute('aria-label') || el.getAttribute('aria-labelledby') || (el.labels && el.labels.length);
 }
 
 function _cellText(cell) {
