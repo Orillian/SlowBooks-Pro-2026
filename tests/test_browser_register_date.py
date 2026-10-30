@@ -1022,3 +1022,64 @@ def test_the_from_kept_is_the_company_files_not_its_names(browser):
         ) == ["|file:harbor.db:1", "|file:unnamed.db:1"]
     finally:
         page.close()
+
+
+def _journal_entry(ledger, txn):
+    e = ledger._by_id(txn)
+    return {
+        "id": txn,
+        "date": e["date"],
+        "description": e["payee"],
+        "reference": "",
+        "source_type": "bank_entry",
+        "lines": [],
+        "total_debit": 25,
+        "total_credit": 25,
+        "register_account_id": 1,
+        "register_account_name": "Checking",
+    }
+
+
+REGISTER_LINK = """() => {
+    const a = document.querySelector('#journal-register-note a');
+    return a && a.getAttribute('href');
+}"""
+
+
+def test_the_journal_link_to_the_register_opens_with_the_entry_in_the_list(
+    browser,
+):
+    """A journal entry posted from a register says "edit it there", linking
+    to the register's bare address, which opens on the From kept (#663):
+    one after the entry's date left it out. The link carries a From no
+    later than the entry's date, so the entry is in the list."""
+    ledger = _Ledger()
+    page = _ledger_page(browser, ledger, "#/banking/1?start_date=2026-10-01")
+    page.route(
+        "**/api/journal/*",
+        lambda r: r.fulfill(
+            json=_journal_entry(
+                ledger, int(urlsplit(r.request.url).path.split("/")[-1])
+            )
+        ),
+    )
+    try:
+        assert page.locator('tr[data-txn="109"]').count() == 0  # Sep 10
+        page.evaluate("async () => { await JournalPage.view(109); }")
+        page.wait_for_selector("#journal-register-note a")
+        assert page.evaluate(REGISTER_LINK) == "#/banking/1?start_date=2026-09-10"
+        page.click("#journal-register-note a")
+        page.wait_for_selector('#page-content tr[data-txn="109"]')
+        assert (
+            page.evaluate("() => location.hash") == "#/banking/1?start_date=2026-09-10"
+        )
+
+        # an entry after the From kept: the link opens on that From
+        page.evaluate("async () => { await JournalPage.view(140); }")  # Oct 10
+        page.wait_for_function(
+            "() => document.getElementById('modal-title').textContent"
+            " === 'Journal Entry #140'"
+        )
+        assert page.evaluate(REGISTER_LINK) == "#/banking/1?start_date=2026-09-10"
+    finally:
+        page.close()

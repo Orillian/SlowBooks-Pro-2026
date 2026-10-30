@@ -698,6 +698,18 @@ const BankingPage = {
     },
     _yearsSaid: 'the year must be between 1900 and 2199',
 
+    // The address of a register opened to show an entry dated `date`
+    // (#663): on the From it keeps, as any link to it opens, unless that is
+    // after the entry's date and would leave the entry out; then from the
+    // entry's own date. With no From kept it opens on every date.
+    async hrefShowing(accountId, date) {
+        await BankingPage._openCompany();
+        const id = Number(accountId);
+        const from = BankingPage._lastFrom(id);
+        const start = from && date && from > date ? String(date) : from;
+        return `#/banking/${id}${start ? `?start_date=${encodeURIComponent(start)}` : ''}`;
+    },
+
     _regFilterFrom(query) {
         const q = query || {};
         // a date that is not one, or From after To, is said so and ignored
