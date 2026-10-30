@@ -630,6 +630,28 @@ const BankingPage = {
     _regFilter: { start_date: '', end_date: '', class_id: '' },
     _regFilterId: null,  // the register it is for
 
+    // The From date each register was last read from (#663), so one worked
+    // from the start of the month opens there, the date in its From box.
+    // Kept in this browser, as a list keeps its Show choice, by sign-in and
+    // company (whose it is, as the Recent list keys its own) and account;
+    // Clear, or a From emptied, forgets it.
+    _fromKey(id) {
+        const owner = (typeof App !== 'undefined' && App._tabsOwner) || '';
+        return `slowbooks-register-from:${owner}:${id}`;
+    },
+    _lastFrom(id) {
+        try {
+            const v = localStorage.getItem(BankingPage._fromKey(id)) || '';
+            return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : '';
+        } catch (e) { return ''; }
+    },
+    _keepFrom(id, date) {
+        try {
+            if (date) localStorage.setItem(BankingPage._fromKey(id), date);
+            else localStorage.removeItem(BankingPage._fromKey(id));
+        } catch (e) { /* not kept: the next visit opens on every date */ }
+    },
+
     _regFilterFrom(query) {
         const q = query || {};
         // a date that is not one, or From after To, is said so and ignored
@@ -668,6 +690,7 @@ const BankingPage = {
         }
         BankingPage._regFilter = next;
         BankingPage._regFilterId = id;
+        BankingPage._keepFrom(id, next.start_date);
         const url = BankingPage._regUrl(id);
         if ((location.hash || '#/') !== url) history.replaceState(history.state, '', url);
         App.navigate(url);
@@ -711,7 +734,12 @@ const BankingPage = {
 
     async renderRegister(accountId, query) {
         const id = parseInt(accountId, 10);
-        const f = BankingPage._regFilterFrom(query);
+        const q = query || {};
+        const f = BankingPage._regFilterFrom(q);
+        // no dates in the address: the From date this register was last
+        // read from (#663); a From in the address is the one kept
+        if (!q.start_date && !q.end_date) f.start_date = BankingPage._lastFrom(id);
+        else if (f.start_date) BankingPage._keepFrom(id, f.start_date);
         BankingPage._regFilter = f;
         BankingPage._regFilterId = id;
         // a date the address carried that was refused (not one, From after

@@ -602,3 +602,66 @@ def test_an_entry_the_class_leaves_out_is_said_so(browser):
         assert page.evaluate("() => location.hash") == at
     finally:
         page.close()
+
+
+# ── #663: the register opens on the last From date it used ──────────────
+
+ON_REGISTER = """([n, start]) => typeof BankingPage !== 'undefined' && BankingPage._ctx
+    && BankingPage._ctx.accountId === n && document.getElementById('reg-start')
+    && document.getElementById('reg-start').value === start"""
+
+
+def _open_register(page, n, start):
+    page.goto(page.url.split("#")[0] + f"#/banking/{n}")
+    page.wait_for_function(ON_REGISTER, arg=[n, start])
+
+
+def test_the_register_opens_on_the_from_date_it_last_used(browser):
+    """The filter lived only in the address, so every visit opened on the
+    whole history (#663). A register opened with no dates in its address
+    opens on the From date it was last read from, in its From box and its
+    address, after a reload too; each account and company keeps its own,
+    and Clear forgets it."""
+    page = _register_page(browser, [])
+    try:
+        assert page.input_value("#reg-start") == ""
+        page.fill("#reg-start", "2026-10-01")  # its change redraws the register
+        page.wait_for_function(
+            "() => location.hash === '#/banking/1?start_date=2026-10-01'"
+        )
+
+        # another register has none; this one, opened by its bare address
+        # (a card on Banking, the chart, a link), opens on the date
+        _open_register(page, 4, "")
+        assert page.evaluate("() => location.hash") == "#/banking/4"
+        _open_register(page, 1, "2026-10-01")
+        assert (
+            page.evaluate("() => location.hash") == "#/banking/1?start_date=2026-10-01"
+        )
+        assert "from Oct 1, 2026" in page.inner_text("#reg-filter-note")
+
+        # a new page load keeps it
+        page.goto(page.url.split("#")[0] + "#/")
+        page.reload()
+        page.wait_for_function("window.App && document.readyState === 'complete'")
+        page.evaluate(
+            "() => { const s = document.getElementById('splash'); if (s) s.classList.add('hidden'); }"
+        )
+        _open_register(page, 1, "2026-10-01")
+
+        # another company's register 1 is not this one
+        page.evaluate("() => { App._tabsOwner = '|Another Company'; }")
+        _open_register(page, 4, "")
+        _open_register(page, 1, "")
+        page.evaluate("() => { App._tabsOwner = '|Harbor Light Bakery Two'; }")
+        _open_register(page, 4, "")
+        _open_register(page, 1, "2026-10-01")
+
+        # Clear forgets it
+        page.get_by_role("button", name="Clear").click()
+        page.wait_for_function("() => location.hash === '#/banking/1'")
+        _open_register(page, 4, "")
+        _open_register(page, 1, "")
+        assert page.evaluate("() => location.hash") == "#/banking/1"
+    finally:
+        page.close()
