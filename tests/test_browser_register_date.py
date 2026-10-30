@@ -516,12 +516,17 @@ def test_a_new_entry_keeps_the_dates_and_comes_into_view(browser):
         assert page.evaluate("() => location.hash") == at
         assert page.input_value("#reg-start") == "2026-09-01"
 
-        # dated past the To date: said, and the page stays where it was
+        # dated past the To date: said, and the page stays where it was. +
+        # Entry pressed from the keyboard, the page scrolled down since:
+        # closing the dialog gives the focus back to + Entry at the top,
+        # which scrolls the page there, and the register puts it back
         at = "#/banking/1?start_date=2026-09-01&end_date=2026-09-30"
         _visit(page, at, "#reg-end[value='2026-09-30']")
-        page.click("text=+ Entry")
+        page.focus("#page-content .page-header button:has-text('+ Entry')")
+        before = _scroll_to(page, 120)
+        assert before > 200, "the page is not scrolled far enough to lose"
+        page.keyboard.press("Enter")
         page.wait_for_selector("#entry-payee")
-        before = page.evaluate(SCROLLED)
         page.evaluate(
             "() => { document.getElementById('reg-start').dataset.drawn = 'before'; }"
         )
@@ -570,13 +575,31 @@ def test_an_edit_keeps_the_dates_and_brings_the_entry_into_view(browser):
         page.close()
 
 
+# A redraw that comes back at the top of the page, as closing a dialog does
+# when it gives the focus back to its button up there: Chromium itself
+# keeps the scroll of a page drawn again the same, so the register's own
+# restore is made to do the work, and the checks fail without it.
+REDRAW_AT_THE_TOP = """() => {
+    const navigate = App.navigate.bind(App);
+    App.navigate = async (hash) => {
+        const done = await navigate(hash);
+        document.getElementById('content').scrollTop = 0;
+        return done;
+    };
+}"""
+
+
 def test_a_void_keeps_the_dates_and_the_place_on_the_page(browser):
+    """A void went back to the bare address, which dropped the dates (the
+    From kept puts only the From back), and the page drawn again (#663).
+    It keeps From and To, and the place on the page."""
     ledger = _Ledger()
-    at = "#/banking/1?start_date=2026-09-01"
+    at = "#/banking/1?start_date=2026-09-01&end_date=2026-10-31"
     page = _ledger_page(browser, ledger, at)
     try:
         top = _scroll_to(page, 140)
-        assert top > 0
+        assert top > 200
+        page.evaluate(REDRAW_AT_THE_TOP)
         page.locator('tr[data-txn="140"] button', has_text="Void").click()
         _toast_with(page, "Voided")
         page.wait_for_function(
@@ -603,7 +626,7 @@ def test_a_feed_action_keeps_the_dates_and_the_place_on_the_page(browser):
         }
         for i in range(20)
     ]
-    at = "#/banking/1?start_date=2026-09-15"
+    at = "#/banking/1?start_date=2026-09-15&end_date=2026-10-31"
     page = _ledger_page(browser, ledger, at, feed=True)
     try:
         page.wait_for_selector("text=Statement line 12")
@@ -612,7 +635,8 @@ def test_a_feed_action_keeps_the_dates_and_the_place_on_the_page(browser):
             "(tr) => { tr.scrollIntoView({ block: 'center' });"
             " return document.getElementById('content').scrollTop; }"
         )
-        assert top > 0
+        assert top > 200
+        page.evaluate(REDRAW_AT_THE_TOP)
         row.locator("button", has_text="Exclude").click()
         page.wait_for_function(
             "() => !document.body.textContent.includes('Statement line 12')"
