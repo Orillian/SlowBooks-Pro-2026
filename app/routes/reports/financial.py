@@ -39,13 +39,15 @@ def _in_class(db, class_id):
     posted line belonging to it: the line's own class, else its
     transaction's, else Uncategorized, as P&L by Class groups them (#213)."""
     from app.models.classes import TxnClass
-    from app.services.classes_service import class_attribution, uncategorized_class_id
+    from app.services.classes_service import (
+        class_attribution,
+        find_uncategorized_class_id,
+    )
 
     cls = db.get(TxnClass, class_id)
     if cls is None:
         raise HTTPException(status_code=404, detail="Class not found")
-    uncat_id = uncategorized_class_id(db)
-    db.commit()
+    uncat_id = find_uncategorized_class_id(db)
     return cls, class_attribution(uncat_id) == class_id
 
 
@@ -1805,19 +1807,26 @@ def profit_loss_by_class(
     activity says `filtered` and its totals are the columns shown.
     """
     from app.models.classes import TxnClass
-    from app.services.classes_service import class_attribution, uncategorized_class_id
+    from app.services.classes_service import (
+        UNCATEGORIZED_NAME,
+        class_attribution,
+        find_uncategorized_class_id,
+    )
 
     basis = cash_basis.resolve_basis(db, basis if isinstance(basis, str) else None)
     start_date, end_date = _period(db, start_date, end_date)
     if show not in ("all", "active"):
         raise HTTPException(status_code=400, detail="show must be all or active")
     chosen = _ids_param(class_ids, "class_ids")
-    uncat_id = uncategorized_class_id(db)
-    db.commit()
+    uncat_id = find_uncategorized_class_id(db)
     meta = {
         c.id: {"name": c.name, "inactive": bool(c.is_archived)}
         for c in db.query(TxnClass).all()
     }
+    if uncat_id is None:
+        # no default class yet: untagged lines are still the Uncategorized
+        # column, without a row to save for it (#662)
+        meta[None] = {"name": UNCATEGORIZED_NAME, "inactive": False}
     out = _pl_pivot(
         db,
         start_date,

@@ -624,6 +624,14 @@ def ensure_nonprofit_accounts(db: Session) -> dict[str, Account]:
     }
 
 
+def find_nonprofit_account(db: Session, number: str) -> Account | None:
+    """The nonprofit account `number` suggests (3300, 3400, ...), found by
+    name as ensure_account finds it, or None while the chart has none. For
+    the reads: a read never adds one (#662)."""
+    name = next(n for num, n, _t in NONPROFIT_ACCOUNTS if num == number)
+    return db.query(Account).filter(Account.name == name).first()
+
+
 def get_net_assets_without_restriction_id(db: Session) -> int:
     return ensure_nonprofit_accounts(db)["3300"].id
 
