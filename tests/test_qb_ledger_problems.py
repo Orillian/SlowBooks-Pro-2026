@@ -626,7 +626,10 @@ def test_a_file_cut_off_mid_section_says_so(client, db_session, seed_accounts):
     assert data["left_out"] == {"unbalanced": 2, "missing_account": 0}
 
 
-def test_a_row_that_cannot_be_read_is_in_the_notice(client, db_session, seed_accounts):
+def test_a_row_that_cannot_be_read_refuses_the_file(client, db_session, seed_accounts):
+    """The one refusal left: a row whose date or amount cannot be read is
+    never guessed at, and never dropped. Here 31/01/2024 in a file whose
+    other dates are month/day/year (01/15/2024)."""
     _chart(db_session)
     data = _upload(
         client,
@@ -637,13 +640,13 @@ def test_a_row_that_cannot_be_read_is_in_the_notice(client, db_session, seed_acc
             )
         ),
     )
-    notice = data["problems"][0]
-    assert notice["kind"] == "cut_off"
-    assert any("could not be read" in d for d in notice["details"]), notice
-    assert any(d.startswith("The lines under Rent") for d in notice["details"])
-    assert [p["key"] for p in data["problems"] if p["kind"] == "unbalanced"] == [
-        CHECK_1002
+    assert data["journals"] == 0 and "problems" not in data
+    assert data["errors"][0].startswith("Nothing was imported: 1 row could not")
+    assert data["errors"][1:] == [
+        "Row 38: the date ('31/01/2024') or an amount ('1,000.00' / '') could not "
+        "be read"
     ]
+    assert _imported(db_session) == []
 
 
 # ── all three, and the adjusting-entries import ─────────────────────────

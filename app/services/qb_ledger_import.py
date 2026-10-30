@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import OrderedDict
 from datetime import datetime
 from decimal import Decimal
@@ -62,6 +63,24 @@ SOURCE_TYPE = "qb_ledger_import"
 GENERAL_JOURNAL_TYPES = frozenset({"General Journal", "Journal", "Journal Entry"})
 LEDGER_COLUMNS = ("Type", "Date", "Num", "Name", "Memo", "Split", "Debit", "Credit")
 _DATE_FORMATS = ("%m/%d/%Y", "%m/%d/%y")
+# A file that is plainly day-first (#663): a date whose first part is over
+# 12, and none whose second part is. QuickBooks Desktop in the US writes
+# month/day/year; an export from elsewhere, or a spreadsheet's, can be
+# day/month/year throughout, and read month-first 05/03 posted as May 3.
+_DAY_FIRST_FORMATS = ("%d/%m/%Y", "%d/%m/%y")
+_DATE_PARTS = re.compile(r"\s*(\d{1,2})/(\d{1,2})/(\d{2}|\d{4})\s*")
+# An amount as QuickBooks writes one: 1,234.56, digits in groups of three
+# before the point. 1.000,00 (a decimal comma) read as 1.00000 before.
+_AMOUNT = re.compile(r"(?:\d{1,3}(?:,\d{3})+|\d*)(?:\.\d*)?")
+_UNREADABLE = (
+    "Nothing was imported: {n} could not be read (listed below), and a "
+    "guess would post a wrong date or amount. QuickBooks Desktop writes a "
+    "date as month/day/year (01/31/2024), and a file whose dates are all "
+    "day/month/year is read that way; an amount reads like 1,234.56. Look "
+    "at those rows in a text editor (a spreadsheet can change dates and "
+    "amounts as it saves a file), or export the report from QuickBooks "
+    "again, and import that."
+)
 _HOW = (
     "Export it from QuickBooks Desktop as Reports > Accountant & Taxes > "
     "Transaction Detail by Account, with the dates set to All, and save it as CSV."
@@ -119,16 +138,34 @@ def has_account_sections(rows: list[list[str]], header_at: int, cols: dict) -> b
 
 
 def _money(raw: str) -> Decimal:
-    raw = (raw or "").replace(",", "").replace("$", "").strip()
-    if not raw:
+    """An amount as QuickBooks writes one: 1,234.56, with a $ or not, and a
+    negative one as -75.00, (75.00) or, with that report preference,
+    75.00-. Anything else raises ValueError: read as it came, 1.000,00 was
+    one dollar."""
+    text = (raw or "").strip()
+    if not text:
         return Decimal("0")
-    negative = raw.startswith("(") and raw.endswith(")")
-    value = Decimal(raw.strip("()"))
+    negative = 0
+    if text.startswith("(") and text.endswith(")"):
+        negative, text = negative + 1, text[1:-1].strip()
+    if text.endswith("-"):
+        negative, text = negative + 1, text[:-1].strip()
+    text = text.removeprefix("$")
+    if text.startswith("-"):
+        negative, text = negative + 1, text[1:].strip()
+    text = text.removeprefix("$")
+    if (
+        negative > 1
+        or not _AMOUNT.fullmatch(text)
+        or not any(c.isdigit() for c in text)
+    ):
+        raise ValueError(f"unreadable amount {raw!r}")
+    value = Decimal(text.replace(",", ""))
     return -value if negative else value
 
 
-def _date(raw: str):
-    for fmt in _DATE_FORMATS:
+def _date(raw: str, day_first: bool = False):
+    for fmt in _DAY_FIRST_FORMATS if day_first else _DATE_FORMATS:
         try:
             return datetime.strptime(raw.strip(), fmt).date()
         except ValueError:
@@ -136,26 +173,50 @@ def _date(raw: str):
     raise ValueError(f"unreadable date {raw!r}")
 
 
+def _day_first(rows: list[list[str]], header_at: int, cols: dict) -> str | None:
+    """The first day-first date of a file whose dates are plainly
+    day/month/year (one's first part over 12, none's second), else None:
+    a file that fits month/day/year is read that way, as QuickBooks
+    Desktop in the US writes it."""
+    t, d = cols["Type"], cols["Date"]
+    first = None
+    for row in rows[header_at + 1 :]:
+        if t >= len(row) or d >= len(row) or not row[t].strip():
+            continue
+        m = _DATE_PARTS.fullmatch(row[d])
+        if not m:
+            continue
+        if int(m[2]) > 12:
+            return None
+        if int(m[1]) > 12 and first is None:
+            first = row[d].strip()
+    return first
+
+
 def parse_ledger(rows: list[list[str]], header_at: int, cols: dict):
     """(lines, errors, notes, cut): each transaction row as {path, type,
     date, num, name, memo, debit, credit, row}, its account the path of the
-    headings above it ("Parent:Child"). `errors` refuse the file (rows with
-    no account above them); `cut` says where it looks cut short or edited:
-    the sections whose lines do not add up to QuickBooks' total, the rows
-    that could not be read, the section it ends in (before that section's
-    Total line), the section whose Total line it ends after, with no TOTAL
-    row for the report, and a TOTAL row the lines do not add up to."""
+    headings above it ("Parent:Child"). `errors` refuse the file: rows with
+    no account above them, and rows whose date or amount cannot be read,
+    every one listed (a file plainly day-first is read day-first, and
+    `notes` says so). `cut` says where it looks cut short or edited: the
+    sections whose lines do not add up to QuickBooks' total, the section it
+    ends in (before that section's Total line), the section whose Total
+    line it ends after, with no TOTAL row for the report, and a TOTAL row
+    the lines do not add up to."""
     first = cols["Type"]  # the label columns are the ones before Type
     lines: list[dict] = []
     errors: list[str] = []
     notes: list[str] = []
     cut: dict = {
         "sections": [],
-        "unreadable": [],
         "ends_in": None,
         "no_total": None,
         "grand": None,
     }
+    # rows whose date or amount cannot be read: the file is refused with
+    # them, the one refusal left (a guess would post a wrong date)
+    unreadable: list[str] = []
     # the report's TOTAL row: whether it was there, what it says, and what
     # every line read comes to
     grand_seen = False
@@ -170,6 +231,13 @@ def parse_ledger(rows: list[list[str]], header_at: int, cols: dict):
         i = cols.get(name)
         return row[i].strip() if i is not None and i < len(row) else ""
 
+    day_first = _day_first(rows, header_at, cols)
+    if day_first:
+        notes.append(
+            f"The dates in this file are day/month/year ({day_first}), so every "
+            "date in it was read that way: check a few in the register after "
+            "the import."
+        )
     for n, row in enumerate(rows[header_at + 1 :], start=header_at + 2):
         ttype = cell(row, "Type")
         if not ttype:
@@ -239,10 +307,10 @@ def parse_ledger(rows: list[list[str]], header_at: int, cols: dict):
             return [], errors, notes, {}
         try:
             debit, credit = _money(cell(row, "Debit")), _money(cell(row, "Credit"))
-            day = _date(cell(row, "Date"))
+            day = _date(cell(row, "Date"), day_first=bool(day_first))
         except Exception:
             # the cells as they read, never the exception's own words
-            cut["unreadable"].append(
+            unreadable.append(
                 f"Row {n}: the date ({cell(row, 'Date')!r}) or an amount "
                 f"({cell(row, 'Debit')!r} / {cell(row, 'Credit')!r}) could not be read"
             )
@@ -267,6 +335,10 @@ def parse_ledger(rows: list[list[str]], header_at: int, cols: dict):
                 "row": n,
             }
         )
+    if unreadable:
+        n = len(unreadable)
+        rows_word = f"{n:,} row{'s' if n != 1 else ''}"
+        return [], [_UNREADABLE.format(n=rows_word)] + unreadable, notes, {}
     # QuickBooks closes every section with its Total line and the report
     # with its TOTAL row; a file that stops inside a section, or after a
     # section's Total line with no TOTAL row, was cut there (Save as CSV
@@ -660,7 +732,6 @@ def _cut_off_problem(cut: dict) -> dict:
             f"{grand['credit']:,.2f} credit, and QuickBooks' TOTAL row says "
             f"{grand['total_debit']:,.2f} and {grand['total_credit']:,.2f}."
         )
-    details += cut["unreadable"]
 
     def text(values):
         return {k: (f"{v:.2f}" if isinstance(v, Decimal) else v) for k, v in values}
@@ -792,10 +863,7 @@ def import_ledger_report(
         result["errors"] = errors
         return result
     if not lines:
-        # rows that could not be read say so, before "no transactions"
-        result["errors"] = (cut or {}).get("unreadable") or [
-            "The report has no transactions in it. " + _HOW
-        ]
+        result["errors"] = ["The report has no transactions in it. " + _HOW]
         return result
     if adjusting_only:
         others: dict[str, int] = {}
