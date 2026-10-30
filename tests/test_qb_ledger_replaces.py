@@ -199,7 +199,12 @@ def test_unticked_both_stay_and_the_file_s_copy_is_left_out(
     _accept_the_cut_file(client)
     data = send(client, COMPLETE, {})
     assert data["journals"] == 0
-    assert data["left_out"] == {"unbalanced": 0, "missing_account": 0, "replaces": 2}
+    assert data["left_out"] == {
+        "unbalanced": 0,
+        "missing_account": 0,
+        "replaces": 2,
+        "closed_period": 0,
+    }
     assert data["accepted"]["replaced"] == 0
     assert len(_imported(db_session)) == 2 and _voids(db_session) == []
     assert _balance(db_session, "Checking") == Decimal("-160.00")
@@ -221,7 +226,12 @@ def test_ticked_the_partial_entry_is_voided_and_the_whole_one_posts(
     assert data["errors"] == []
     assert data["journals"] == 2
     assert data["accepted"]["replaced"] == 2
-    assert data["left_out"] == {"unbalanced": 0, "missing_account": 0, "replaces": 0}
+    assert data["left_out"] == {
+        "unbalanced": 0,
+        "missing_account": 0,
+        "replaces": 0,
+        "closed_period": 0,
+    }
     assert _balance(db_session, "Checking") == Decimal("-160.00")
     assert _balance(db_session, "Import Differences") == 0
     assert _balance(db_session, "Accounts Receivable") == Decimal("100.00")

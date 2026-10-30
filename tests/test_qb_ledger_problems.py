@@ -187,7 +187,12 @@ def test_an_accepted_transaction_posts_its_difference_once(
         "cut_off": False,
         "replaced": 0,
     }
-    assert data["left_out"] == {"unbalanced": 0, "missing_account": 0, "replaces": 0}
+    assert data["left_out"] == {
+        "unbalanced": 0,
+        "missing_account": 0,
+        "replaces": 0,
+        "closed_period": 0,
+    }
     assert data["differences_account"] == "3950 Import Differences"
     differences = _account(db_session, "Import Differences")
     assert differences.account_number == "3950"
@@ -227,7 +232,12 @@ def test_a_transaction_left_out_stays_out_until_a_later_upload(
         "cut_off": False,
         "replaced": 0,
     }
-    assert data["left_out"] == {"unbalanced": 1, "missing_account": 0, "replaces": 0}
+    assert data["left_out"] == {
+        "unbalanced": 1,
+        "missing_account": 0,
+        "replaces": 0,
+        "closed_period": 0,
+    }
     assert "differences_account" not in data
     assert _account(db_session, "Import Differences") is None
     # the same file again asks about it alone
@@ -395,7 +405,12 @@ def test_an_account_left_out_leaves_out_what_touches_it(
     _chart_without(db_session, "Card Fees")
     data = _upload(client, FIXTURE.read_bytes(), {"accounts": {}})
     assert data["journals"] == 6
-    assert data["left_out"] == {"unbalanced": 0, "missing_account": 2, "replaces": 0}
+    assert data["left_out"] == {
+        "unbalanced": 0,
+        "missing_account": 2,
+        "replaces": 0,
+        "closed_period": 0,
+    }
     assert _account(db_session, "Card Fees") is None
     # made later, the next upload brings those two in
     db_session.add(Account(name="Card Fees", account_type=AccountType.EXPENSE))
@@ -437,7 +452,12 @@ def test_a_parents_own_section_asks_for_the_parent(client, db_session, seed_acco
         client, _other_sections_report(2), {"accounts": {"Office Expense": "expense"}}
     )
     assert data["journals"] == 1
-    assert data["left_out"] == {"unbalanced": 0, "missing_account": 1, "replaces": 0}
+    assert data["left_out"] == {
+        "unbalanced": 0,
+        "missing_account": 1,
+        "replaces": 0,
+        "closed_period": 0,
+    }
     office = _account(db_session, "Office Expense")
     (check,) = _imported(db_session)
     assert check.reference == "101"
@@ -638,7 +658,12 @@ def test_a_file_cut_off_mid_section_says_so(client, db_session, seed_accounts):
     # what is there, without the two checks
     data = _upload(client, _cut_after("Scheduling app"), {"cut_off": True})
     assert data["journals"] == 6
-    assert data["left_out"] == {"unbalanced": 2, "missing_account": 0, "replaces": 0}
+    assert data["left_out"] == {
+        "unbalanced": 2,
+        "missing_account": 0,
+        "replaces": 0,
+        "closed_period": 0,
+    }
 
 
 def test_a_row_that_cannot_be_read_refuses_the_file(client, db_session, seed_accounts):
@@ -660,6 +685,96 @@ def test_a_row_that_cannot_be_read_refuses_the_file(client, db_session, seed_acc
     assert data["errors"][1:] == [
         "Row 38: the date ('31/01/2024') or an amount ('1,000.00' / '') could not "
         "be read"
+    ]
+    assert _imported(db_session) == []
+
+
+# ── the closing date ─────────────────────────────────────────────────────
+
+
+def _closed_through(db, day: str):
+    from app.models.settings import Settings
+
+    db.add(Settings(key="closing_date", value=day))
+    db.commit()
+
+
+# the reviewer's file: a January check on an account the chart lacks (in a
+# period closed through January 31), and a February check whose other side
+# is not in the file
+CLOSED = build(
+    [
+        heading("Checking"),
+        row("Check", "01/05/2024", "101", "Acme", "", "Postage", "", "60.00"),
+        row("Check", "02/05/2024", "102", "Acme", "", "Rent or Lease", "", "70.00"),
+        total("Checking", "0.00", "130.00"),
+        heading("Postage"),
+        row("Check", "01/05/2024", "101", "Acme", "", "Checking", "60.00", ""),
+        total("Postage", "60.00", "0.00"),
+        grand("60.00", "130.00"),
+    ]
+)
+CHECK_102 = "Check 102 · 2024-02-05 · Acme"
+
+
+def test_a_closed_period_is_a_notice_and_the_rest_imports(
+    client, db_session, seed_accounts
+):
+    """The first call did not look at the closing date; after the person went
+    through the list, the second call failed whole with a 403. The journals
+    on or before it are a notice with no box: how many, which dates, that
+    they are left out and that moving the closing date brings them in."""
+    _closed_through(db_session, "2024-01-31")
+    first = _upload(client, CLOSED)
+    assert _kinds(first) == ["closed_period", "unbalanced"]
+    notice = first["problems"][0]
+    assert {k: notice[k] for k in ("key", "closing_date", "transactions", "dates")} == {
+        "key": "closed_period",
+        "closing_date": "2024-01-31",
+        "transactions": 1,
+        "dates": ["2024-01-05"],
+    }
+    assert notice["text"] == (
+        "1 transaction dated on or before the closing date, 01/31/2024: " "01/05/2024."
+    )
+    note = first["problem_notes"]["closed_period"]
+    assert "left out" in note and "Settings > Closing Date" in note
+    # only the closed check touches Postage: no account to make for it
+    assert "missing_account" not in _kinds(first)
+    assert first["ready"] == 0
+    r = _send(client, CLOSED, {"unbalanced": [CHECK_102]})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["journals"] == 1 and data["errors"] == []
+    assert data["left_out"] == {
+        "unbalanced": 0,
+        "missing_account": 0,
+        "replaces": 0,
+        "closed_period": 1,
+    }
+    assert [t.reference for t in _imported(db_session)] == ["102"]
+    assert _account(db_session, "Postage") is None
+    # moved, the closing date lets the January check in
+    from app.models.settings import Settings
+
+    db_session.query(Settings).filter(
+        Settings.key == "closing_date"
+    ).one().value = "2023-12-31"
+    db_session.commit()
+    later = _upload(client, CLOSED)
+    assert _kinds(later) == ["missing_account"]
+    data = _upload(client, CLOSED, {"accounts": {"Postage": "expense"}})
+    assert data["journals"] == 1 and data["duplicates_skipped"] == 1
+
+
+def test_a_file_wholly_in_a_closed_period_says_so(client, db_session, seed_accounts):
+    _chart(db_session)
+    _closed_through(db_session, "2024-12-31")
+    data = _upload(client, FIXTURE.read_bytes())
+    assert data["journals"] == 0 and "problems" not in data
+    assert data["left_out"]["closed_period"] == 8
+    assert any("closing date, 12/31/2024" in w for w in data["warnings"]), data[
+        "warnings"
     ]
     assert _imported(db_session) == []
 
@@ -689,7 +804,12 @@ def test_every_kind_together_in_one_answer(client, db_session, seed_accounts):
         "cut_off": True,
         "replaced": 0,
     }
-    assert data["left_out"] == {"unbalanced": 0, "missing_account": 0, "replaces": 0}
+    assert data["left_out"] == {
+        "unbalanced": 0,
+        "missing_account": 0,
+        "replaces": 0,
+        "closed_period": 0,
+    }
 
 
 def test_an_unbalanced_transaction_on_a_missing_account_needs_both(
@@ -701,7 +821,12 @@ def test_an_unbalanced_transaction_on_a_missing_account_needs_both(
     # the account alone: the check still waits on its own answer
     data = _upload(client, UNBALANCED, {"accounts": {"Rent": "expense"}})
     assert data["journals"] == 7
-    assert data["left_out"] == {"unbalanced": 1, "missing_account": 0, "replaces": 0}
+    assert data["left_out"] == {
+        "unbalanced": 1,
+        "missing_account": 0,
+        "replaces": 0,
+        "closed_period": 0,
+    }
     data = _upload(client, UNBALANCED, {"unbalanced": [CHECK_1002]})
     assert data["journals"] == 1 and data["duplicates_skipped"] == 7
 

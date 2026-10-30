@@ -1041,6 +1041,15 @@ LEDGER_REPLACES = {
     "file_sha256": "ab" * 32,
     "problems": [
         {
+            "kind": "closed_period",
+            "key": "closed_period",
+            "closing_date": "2023-12-31",
+            "transactions": 2,
+            "dates": ["2023-12-04", "2023-12-29"],
+            "text": "2 transactions dated on or before the closing date, "
+            "12/31/2023: 12/04/2023 and 12/29/2023.",
+        },
+        {
             "kind": "replaces",
             "key": "General Journal 31 · 2024-01-31",
             "date": "2024-01-31",
@@ -1095,6 +1104,8 @@ LEDGER_REPLACES = {
         },
     ],
     "problem_notes": {
+        "closed_period": "The books are closed through 12/31/2023, so a "
+        "transaction dated on or before it is left out.",
         "replaces": "An earlier file had these transactions in part. Ticked, the "
         "partial entry is voided and this file's posts in its place.",
     },
@@ -1106,7 +1117,12 @@ REPLACES_ANSWERED = {
     "errors": [],
     "warnings": [],
     "accepted": {"unbalanced": 0, "accounts": [], "cut_off": False, "replaced": 1},
-    "left_out": {"unbalanced": 0, "missing_account": 0, "replaces": 1},
+    "left_out": {
+        "unbalanced": 0,
+        "missing_account": 0,
+        "replaces": 1,
+        "closed_period": 2,
+    },
 }
 
 
@@ -1114,6 +1130,13 @@ def test_a_transaction_that_replaces_a_partial_entry_is_listed_beside_it(browser
     sent = []
     page = _problem_page(browser, sent, LEDGER_REPLACES, REPLACES_ANSWERED)
     try:
+        # the closing date's notice comes first, with no box to tick
+        closed = page.locator("#qbr [data-kind=closed_period]")
+        assert closed.locator("h5").inner_text() == (
+            "2 transactions in a closed period, left out"
+        )
+        assert closed.locator("input").count() == 0
+        assert "12/04/2023 and 12/29/2023" in closed.inner_text()
         group = page.locator("#qbr [data-kind=replaces]")
         assert group.locator("h5").inner_text() == (
             "2 transactions that replace a partial entry in the books"
@@ -1180,6 +1203,7 @@ def test_a_transaction_that_replaces_a_partial_entry_is_listed_beside_it(browser
             "Journal entries | 1 imported",
             "Replaced: partial entries voided, this file's posted in their place | 1",
             "Left out: a partial entry in the books kept | 1",
+            "Left out: in a closed period | 2",
             "Duplicates skipped | 7",
         ]
     finally:

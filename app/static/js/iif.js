@@ -317,6 +317,7 @@ const IIFPage = {
         const notes = result.problem_notes || {};
         const of = kind => problems.filter(p => p.kind === kind);
         const [cut] = of('cut_off');
+        const [closed] = of('closed_period');
         const accounts = of('missing_account');
         const unbalanced = of('unbalanced');
         const replaces = of('replaces');
@@ -335,6 +336,14 @@ const IIFPage = {
                 <p class="qbr-note">${escapeHtml(notes.cut_off || '')}</p>
                 <ul class="qbr-details">${(cut.details || []).map(d => `<li>${escapeHtml(d)}</li>`).join('')}</ul>
                 <label class="qbr-tick"><input type="checkbox" class="qbr-pick" data-kind="cut_off" data-key="file" onchange="IIFPage._reviewChanged()"> Import what is there</label>
+            </section>`;
+        }
+        if (closed) {
+            // a notice, no box: what the closing date keeps out (#663)
+            html += `<section class="qbr-group" data-kind="closed_period" aria-labelledby="qbr-h-closed_period">
+                <h5 id="qbr-h-closed_period">${IIFPage._count(closed.transactions, 'transaction')} in a closed period, left out</h5>
+                <p class="qbr-note">${escapeHtml(notes.closed_period || '')}</p>
+                <ul class="qbr-details"><li>${escapeHtml(closed.text || '')}</li></ul>
             </section>`;
         }
         if (accounts.length) {
@@ -557,6 +566,7 @@ const IIFPage = {
         if (left.replaces > 0) html += row('Left out: a partial entry in the books kept', left.replaces);
         if (left.unbalanced > 0) html += row('Left out: did not balance', left.unbalanced);
         if (left.missing_account > 0) html += row('Left out: an account not in the chart', left.missing_account);
+        if (left.closed_period > 0) html += row('Left out: in a closed period', left.closed_period);
         return html;
     },
 

@@ -160,6 +160,10 @@ grouped, for you to tick the ones to accept and leave the rest:
   total QuickBooks printed, a file that ends inside a section, or a row that
   cannot be read. Ticked, what is there imports; unticked, nothing does.
   See *Long histories* below.
+- **Transactions in a closed period**: a notice, with nothing to tick, of
+  how many are dated on or before the closing date and which dates. They
+  are left out and the rest imports; to bring them in, move the closing
+  date (Settings > Closing Date) and import the file again.
 
 Each list has Select all and Select none, and **Save the list** writes the
 problems to a text file to work from. **Import** sends the same file again

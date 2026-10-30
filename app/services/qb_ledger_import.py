@@ -928,22 +928,66 @@ def _replaces_problem(db: Session, group: dict) -> dict:
     }
 
 
+def _dates_words(days: list) -> str:
+    """01/05/2024; 01/05/2024 and 01/12/2024; or, past five, the first and
+    last of them and how many."""
+    words = [f"{d:%m/%d/%Y}" for d in days]
+    if len(words) > 5:
+        return f"{words[0]} to {words[-1]} ({len(words):,} dates)"
+    if len(words) > 1:
+        return ", ".join(words[:-1]) + " and " + words[-1]
+    return words[0]
+
+
+def _closed_problem(closed: list[dict], closing) -> dict:
+    """The journals dated on or before the closing date, left out (#663): a
+    notice, with no box to tick. They were refused whole with a 403 at the
+    second call, after the person had gone through the list."""
+    days = sorted({t["lines"][0]["date"] for t in closed})
+    n = len(closed)
+    return {
+        "kind": "closed_period",
+        "key": "closed_period",
+        "closing_date": closing.isoformat(),
+        "transactions": n,
+        "dates": [d.isoformat() for d in days],
+        "text": (
+            f"{n:,} transaction{'s' if n != 1 else ''} dated on or before the "
+            f"closing date, {closing:%m/%d/%Y}: {_dates_words(days)}."
+        ),
+    }
+
+
+def _closed_note(closing) -> str:
+    return (
+        f"The books are closed through {closing:%m/%d/%Y}, so a transaction "
+        "dated on or before it is left out. To bring these in, move the "
+        "closing date (Settings > Closing Date) and import the file again: "
+        "what is here already is skipped."
+    )
+
+
 def _problems(
     db: Session,
     candidates: list[dict],
     cut: dict,
     missing: dict,
     groups: dict,
+    closed: list[dict],
+    closing,
 ) -> list[dict]:
     """What the person answers before anything posts, among the
     transactions not in the books already: a notice when the file looks
-    cut short or edited, each account not in the chart with how many
-    transactions touch it, each transaction the books hold as a partial
-    entry that this file has whole, and each transaction that does not
-    balance, every one however many (discussion #349)."""
+    cut short or edited, one for the transactions in a closed period (left
+    out), each account not in the chart with how many transactions touch
+    it, each transaction the books hold as a partial entry that this file
+    has whole, and each transaction that does not balance, every one
+    however many (discussion #349)."""
     if not candidates:
         return []
     out = [_cut_off_problem(cut)] if cut else []
+    if closed:
+        out.append(_closed_problem(closed, closing))
     for target in OrderedDict.fromkeys(missing.values()):
         n = sum(1 for t in candidates if target in t["needs"])
         if not n:
@@ -972,6 +1016,13 @@ def _problem_notes(db: Session, problems: list[dict]) -> dict:
     tick does."""
     kinds = {p["kind"] for p in problems}
     notes = {}
+    closed = next((p for p in problems if p["kind"] == "closed_period"), None)
+    if closed is not None:
+        from datetime import date
+
+        notes["closed_period"] = _closed_note(
+            date.fromisoformat(closed["closing_date"])
+        )
     if "cut_off" in kinds:
         notes["cut_off"] = (
             "The file looks cut short or edited. QuickBooks' Save as CSV stops a "
@@ -1105,9 +1156,17 @@ def import_ledger_report(
             # the same cut file again: its entry is the one in the books
             t["state"] = "here"
             claimed.add(partial["id"])
+    from app.services.closing_date import get_closing_date
+
+    # a journal on or before the closing date is left out, and the list says
+    # so: it was the second call's 403, after the person had answered
+    closing = get_closing_date(db)
     groups: OrderedDict = OrderedDict()
     for t in txns:
         if t["state"]:
+            continue
+        if closing is not None and t["lines"][0]["date"] <= closing:
+            t["state"] = "closed"
             continue
         standing = [
             p for p in partial_by_ttd.get(t["ttd"], ()) if p["id"] not in claimed
@@ -1130,9 +1189,13 @@ def import_ledger_report(
         )
         group["journals"].append(t)
     candidates = [t for t in txns if t["state"] in ("pending", "replaces")]
-    problems = _problems(db, candidates, cut, missing, groups)
+    closed = [t for t in txns if t["state"] == "closed"]
+    problems = _problems(db, candidates, cut, missing, groups, closed, closing)
     if cut and not candidates:
         result["warnings"].append(_cut_off_problem(cut)["text"])
+    if closed and not candidates:
+        notice = _closed_problem(closed, closing)
+        result["warnings"].append(f"{notice['text']} {_closed_note(closing)}")
     here = sum(1 for t in txns if t["state"] == "here")
     if problems and answers is None:
         # nothing posts before the person has seen them
@@ -1173,7 +1236,12 @@ def import_ledger_report(
     for path, target in missing.items():
         if target in made:
             accounts[path] = made[target]
-    left_out = {"unbalanced": 0, "missing_account": 0, "replaces": 0}
+    left_out = {
+        "unbalanced": 0,
+        "missing_account": 0,
+        "replaces": 0,
+        "closed_period": 0,
+    }
     accepted = 0
     replaced = 0
     posting = {"differences": None, "control": 0}
@@ -1240,6 +1308,9 @@ def import_ledger_report(
         if state == "here":
             result["duplicates_skipped"] += 1
             continue
+        if state == "closed":
+            left_out["closed_period"] += 1
+            continue
         if state == "replaces":
             group = groups[t["ttd"]]
             if group.get("done"):
@@ -1295,8 +1366,9 @@ def import_ledger_report(
             "cut_off": bool(cut),
             "replaced": replaced,
         }
-        result["left_out"] = left_out
         if posting["differences"] is not None:
             result["differences_account"] = label_for(posting["differences"], db)
+    if problems or closed:
+        result["left_out"] = left_out
     db.commit()
     return result
