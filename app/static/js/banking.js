@@ -739,16 +739,19 @@ const BankingPage = {
     // the address first, the dates came back through datesFromQuery as
     // "in the address … both ignored", and both boxes were emptied):
     // said, with the filter kept, and the boxes put back to it — the
-    // register, and its address, stay on that filter.
+    // register, and its address, stay on that filter. A date half typed,
+    // or in a year no books hold, is refused the same way, box by box
+    // (#663).
     regFilterChanged(id, filter = null) {
         const was = BankingPage._regFilter;
         let refused = false;
         const typed = (sel, word, kept) => {
-            const why = BankingPage._dateRefused($(sel), word);
-            if (!why) return $(sel)?.value || '';
+            const box = $(sel);
+            const why = BankingPage._dateRefused(box, word);
+            if (!why) return (box && box.value) || '';
             refused = true;
             toast(`${why} — kept ${BankingPage._keptWords(was)}`, 'error');
-            BankingPage._putBack($(sel), kept);
+            BankingPage._putBack(box, kept);
             return kept || '';
         };
         const next = filter || {
