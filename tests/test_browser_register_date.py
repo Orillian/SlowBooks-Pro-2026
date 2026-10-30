@@ -482,6 +482,10 @@ def test_a_new_entry_keeps_the_dates_and_comes_into_view(browser):
         _visit(page, at, "#reg-end[value='2026-09-30']")
         page.click("text=+ Entry")
         page.wait_for_selector("#entry-payee")
+        before = page.evaluate(SCROLLED)
+        page.evaluate(
+            "() => { document.getElementById('reg-start').dataset.drawn = 'before'; }"
+        )
         page.fill("#modal-body [name='date']", "2026-10-15")
         page.fill("#modal-body [name='amount']", "-12")
         page.select_option("#entry-category", "2")
@@ -491,9 +495,12 @@ def test_a_new_entry_keeps_the_dates_and_comes_into_view(browser):
             "Entry posted. Its date, Oct 15, 2026, is after the To date,"
             " so the register does not show it.",
         )
-        page.wait_for_selector("#modal-overlay.hidden", state="attached")
+        # the register drawn again, on the same dates and at the same place
+        page.wait_for_function(
+            "() => !document.getElementById('reg-start').dataset.drawn"
+        )
         assert page.evaluate("() => location.hash") == at
-        assert page.evaluate(SCROLLED) == 0
+        assert abs(page.evaluate(SCROLLED) - before) <= 1
     finally:
         page.close()
 
@@ -561,12 +568,12 @@ def test_a_feed_action_keeps_the_dates_and_the_place_on_the_page(browser):
     page = _ledger_page(browser, ledger, at, feed=True)
     try:
         page.wait_for_selector("text=Statement line 12")
-        top = page.evaluate(
-            "() => { const box = document.getElementById('content'); box.scrollTop = 300;"
-            " return box.scrollTop; }"
-        )
-        assert top == 300
         row = page.locator("tr", has_text="Statement line 12")
+        top = row.evaluate(
+            "(tr) => { tr.scrollIntoView({ block: 'center' });"
+            " return document.getElementById('content').scrollTop; }"
+        )
+        assert top > 0
         row.locator("button", has_text="Exclude").click()
         page.wait_for_function(
             "() => !document.body.textContent.includes('Statement line 12')"
