@@ -472,12 +472,13 @@ def _ledger_page(browser, ledger, at, classes=None, feed=False):
     return page
 
 
+# within a pixel: a row scrolled to the nearest edge can sit a fraction past it
 IN_VIEW = """(txn) => {
     const row = document.querySelector(`#page-content tr[data-txn="${txn}"]`);
     if (!row) return false;
     const box = document.getElementById('content').getBoundingClientRect();
     const r = row.getBoundingClientRect();
-    return r.top >= box.top && r.bottom <= box.bottom;
+    return r.top >= box.top - 1 && r.bottom <= box.bottom + 1;
 }"""
 SCROLLED = "() => document.getElementById('content').scrollTop"
 
@@ -1246,5 +1247,39 @@ def test_the_review_actions_say_when_the_dates_leave_the_entry_out(browser):
             " so the register does not show it.",
         )
         assert page.evaluate("() => location.hash") == at
+    finally:
+        page.close()
+
+
+ROW_TOP = """(txn) => document.querySelector(`#page-content tr[data-txn="${txn}"]`)
+    .getBoundingClientRect().top - document.getElementById('content').getBoundingClientRect().top"""
+
+
+def test_an_edit_to_a_row_on_screen_does_not_move_it(browser):
+    """After an edit the entry's row was scrolled to the middle of the
+    page, so a row on screen jumped on every edit (#663). One on screen
+    stays where it was; one the edit moved off screen is brought in."""
+    ledger = _Ledger()
+    at = "#/banking/1?start_date=2026-09-01&end_date=2026-10-31"
+    page = _ledger_page(browser, ledger, at)
+    try:
+        page.evaluate(
+            "() => { const row = document.querySelector('tr[data-txn=\"120\"]');"
+            " row.scrollIntoView({ block: 'start' });"
+            " document.getElementById('content').scrollTop -= 60; }"
+        )
+        top = page.evaluate(ROW_TOP, 120)
+        assert 40 < top < 120
+        page.locator('tr[data-txn="120"] button', has_text="Edit").click()
+        page.wait_for_function(
+            "() => document.getElementById('modal-title').textContent === 'Edit entry'"
+        )
+        page.fill("#entry-payee", "Harbor Fuel")
+        page.click("#modal-body button[type='submit']")
+        _toast_with(page, "Entry saved")
+        page.wait_for_function(
+            "() => document.querySelector('tr[data-txn=\"120\"]').textContent.includes('Harbor Fuel')"
+        )
+        assert abs(page.evaluate(ROW_TOP, 120) - top) <= 1
     finally:
         page.close()

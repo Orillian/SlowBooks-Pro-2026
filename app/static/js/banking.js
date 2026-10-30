@@ -917,14 +917,15 @@ const BankingPage = {
 
     // Back to the register after a change made on it (#663): on its own
     // dates and class, which the bare address dropped, with the page where
-    // it was, or, given an entry, with that entry's row in view.
+    // it was and, given an entry, that entry's row in view: scrolled to
+    // only when it is not, so a row on screen stays where it was.
     async _backToRegister(accountId, { txnId = null, top = null } = {}) {
         const box = document.getElementById('content');
         const at = top === null ? (box ? box.scrollTop : 0) : top;
         await BankingPage.go(BankingPage._regUrl(accountId));
         const row = txnId ? document.querySelector(`#page-content tr[data-txn="${Number(txnId)}"]`) : null;
-        if (row && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center' });
-        else if (box) box.scrollTop = at;
+        if (box) box.scrollTop = at;
+        if (row && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'nearest' });
         return row;
     },
 
