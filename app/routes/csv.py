@@ -200,7 +200,7 @@ async def csv_import_qb_report(
     file: UploadFile = File(...),
     adjusting_only: bool = Form(False),
     outflow_positive: bool = Form(False),
-    answers: str = Form(None),
+    answers: UploadFile | str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     """Import a QuickBooks Desktop report CSV — the documented fallback
@@ -210,11 +210,17 @@ async def csv_import_qb_report(
 
     A Transaction Detail by Account file with problems posts nothing and
     answers with them (#663); ``answers``, a JSON object, is the person's
-    answers to them, sent with the same file again."""
+    answers to them, sent with the same file again: a text field, or a
+    part of its own, as the page sends it (a text field holds 1 MB, and
+    thousands of ticked transactions can be more)."""
     from app.services.qb_ledger_import import read_answers
     from app.services.qb_report_import import import_qb_report
     from app.services.safe_errors import DataProblem
 
+    if answers is not None and not isinstance(answers, str):
+        answers = (await read_limited(answers, label="The answers")).decode(
+            "utf-8", "replace"
+        )
     try:
         answered = read_answers(answers)
     except DataProblem as e:

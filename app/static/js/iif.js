@@ -222,7 +222,9 @@ const IIFPage = {
         formData.append('file', sent.file);
         formData.append('adjusting_only', sent.adjusting ? 'true' : 'false');
         formData.append('outflow_positive', sent.outflow ? 'true' : 'false');
-        if (answers) formData.append('answers', JSON.stringify(answers));
+        // a part of its own: a text field holds 1 MB, and thousands of
+        // ticked transactions' keys can be more
+        if (answers) formData.append('answers', new Blob([JSON.stringify(answers)], { type: 'application/json' }), 'answers.json');
         try {
             App.setStatus('Importing QuickBooks report CSV...');
             const res = await fetch('/api/csv/import/qb-report', { method: 'POST', body: formData });

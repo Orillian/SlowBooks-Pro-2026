@@ -379,6 +379,30 @@ def test_answers_that_cannot_be_read_are_refused(
     assert _imported(db_session) == []
 
 
+def test_answers_longer_than_a_text_field_come_as_a_part(
+    client, db_session, seed_accounts
+):
+    """A form's text field holds 1 MB, and thousands of ticked keys can be
+    more: the page sends the answers as a part of their own."""
+    _chart(db_session)
+    keys = [CHECK_1002] + [
+        f"Check {n} · 2024-02-01 · Northwind Property Management Group"
+        for n in range(30000)
+    ]
+    body = json.dumps({"unbalanced": keys}).encode()
+    assert len(body) > 1024 * 1024
+    r = client.post(
+        URL,
+        files={
+            "file": ("t.csv", io.BytesIO(UNBALANCED), "text/csv"),
+            "answers": ("answers.json", io.BytesIO(body), "application/json"),
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["journals"] == 8
+    assert r.json()["accepted"]["unbalanced"] == 1
+
+
 # ── a file that looks cut short or edited ────────────────────────────────
 
 
