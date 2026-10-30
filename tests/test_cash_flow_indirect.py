@@ -17,6 +17,7 @@ from sqlalchemy import func
 
 from app.models.accounts import Account
 from app.models.transactions import Transaction, TransactionLine
+from app.seed.fixed_assets import ensure_default_asset_type
 
 START, END = "2026-02-01", "2026-03-31"
 
@@ -204,7 +205,10 @@ def books(client, db_session, seed_accounts, seed_customer):
     )
     _ok(client.post(f"/api/payroll/{run['id']}/process"))
 
-    # a fixed asset bought from Checking, and a month of its depreciation
+    # a fixed asset bought from Checking, and a month of its depreciation,
+    # on the type a new company gets at setup (a read never makes it: #662)
+    ensure_default_asset_type(db_session)
+    db_session.commit()
     [etype] = client.get("/api/fixed-assets/types").json()
     _ok(
         client.post(
@@ -330,6 +334,8 @@ def test_loans_and_the_owners_money_are_financing(client, books):
 def test_selling_a_fixed_asset_is_investing_and_its_loss_is_added_back(
     client, db_session, seed_accounts
 ):
+    ensure_default_asset_type(db_session)
+    db_session.commit()
     [etype] = client.get("/api/fixed-assets/types").json()
     asset = _ok(
         client.post(

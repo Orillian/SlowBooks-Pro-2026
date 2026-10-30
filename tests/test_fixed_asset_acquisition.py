@@ -24,8 +24,13 @@ JS = (Path(__file__).resolve().parents[1] / "app/static/js/fixed_assets.js").rea
 
 
 @pytest.fixture
-def equipment_type(client, seed_accounts):
-    """The default type a new company gets: 1500 / 1510 / 6810, five years."""
+def equipment_type(client, db_session, seed_accounts):
+    """The default type a new company gets: 1500 / 1510 / 6810, five years
+    (at setup: a read never makes it, #662)."""
+    from app.seed.fixed_assets import ensure_default_asset_type
+
+    ensure_default_asset_type(db_session)
+    db_session.commit()
     [t] = client.get("/api/fixed-assets/types").json()
     assert t["asset_account_id"] == seed_accounts["1500"].id
     return t
