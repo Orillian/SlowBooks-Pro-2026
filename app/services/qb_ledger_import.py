@@ -19,8 +19,14 @@
 # own. Before anything is written the whole file is checked: every account
 # in the chart (the lists IIF first), every transaction balanced, every
 # section's lines adding up to the total QuickBooks printed for it. A file
-# that fails is refused whole, never imported in part. A second upload
-# posts nothing twice.
+# that passes imports. One that does not posts nothing on its first upload
+# and answers with its problems instead (#663): each transaction that does
+# not balance, each account not in the chart, and a notice when the file
+# looks cut short or edited. The page lists them for the person to accept
+# or leave out and sends the same file again with the answers: what checks
+# out imports with what was accepted (an accepted transaction's difference
+# on Import Differences, an accepted account made with the type chosen),
+# and the rest is left out and counted. A second upload posts nothing twice.
 #
 # Built against a real company's report (a year of a small practice's books:
 # about 5,700 rows, every transaction balanced, the section totals matched);
@@ -30,14 +36,25 @@
 
 from __future__ import annotations
 
+import json
 from collections import OrderedDict
 from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
+from app.models.accounts import (
+    BASE_TYPE_OF,
+    DETAIL_TYPES,
+    Account,
+    AccountType,
+    DetailType,
+)
 from app.models.transactions import Transaction
-from app.services.accounting import create_journal_entry
+from app.services.account_label import account_label, label_for
+from app.services.accounting import create_journal_entry, ensure_account
+from app.services.safe_errors import DataProblem
+from app.services.settings_service import use_account_numbers
 
 SOURCE_TYPE = "qb_ledger_import"
 # QuickBooks' Type for a journal entry on this report
@@ -119,13 +136,19 @@ def _date(raw: str):
 
 
 def parse_ledger(rows: list[list[str]], header_at: int, cols: dict):
-    """(lines, errors, notes): each transaction row as {path, type, date,
-    num, name, memo, debit, credit, row}, its account the path of the
-    headings above it ("Parent:Child")."""
+    """(lines, errors, notes, cut): each transaction row as {path, type,
+    date, num, name, memo, debit, credit, row}, its account the path of the
+    headings above it ("Parent:Child"). `errors` refuse the file (rows with
+    no account above them); `cut` says where it looks cut short or edited:
+    the sections whose lines do not add up to QuickBooks' total, the rows
+    that could not be read, and the section it ends in, before that
+    section's Total line."""
     first = cols["Type"]  # the label columns are the ones before Type
     lines: list[dict] = []
     errors: list[str] = []
     notes: list[str] = []
+    cut: dict = {"sections": [], "unreadable": [], "ends_in": None}
+    totals = 0
     # each open section: (depth, name, [debit, credit] of the lines under it
     # so far, its sub-accounts' included)
     stack: list[tuple[int, str, list[Decimal]]] = []
@@ -170,12 +193,16 @@ def parse_ledger(rows: list[list[str]], header_at: int, cols: dict):
                         )
                     else:
                         if (got_d, got_c) != (debit, credit):
-                            errors.append(
-                                f"The lines under {path} come to {got_d:,.2f} debit "
-                                f"and {got_c:,.2f} credit, and QuickBooks' total says "
-                                f"{debit:,.2f} and {credit:,.2f}: the file looks cut "
-                                "short or edited. Export it again."
+                            cut["sections"].append(
+                                {
+                                    "path": path,
+                                    "debit": got_d,
+                                    "credit": got_c,
+                                    "total_debit": debit,
+                                    "total_credit": credit,
+                                }
                             )
+                    totals += 1
                     stack.pop()
                 continue
             while stack and stack[-1][0] >= depth:
@@ -187,13 +214,13 @@ def parse_ledger(rows: list[list[str]], header_at: int, cols: dict):
                 "This report lists its transactions without the account each one "
                 "belongs to above it, so they cannot be posted. " + _HOW
             )
-            return [], errors, notes
+            return [], errors, notes, {}
         try:
             debit, credit = _money(cell(row, "Debit")), _money(cell(row, "Credit"))
             day = _date(cell(row, "Date"))
         except Exception:
             # the cells as they read, never the exception's own words
-            errors.append(
+            cut["unreadable"].append(
                 f"Row {n}: the date ({cell(row, 'Date')!r}) or an amount "
                 f"({cell(row, 'Debit')!r} / {cell(row, 'Credit')!r}) could not be read"
             )
@@ -216,7 +243,17 @@ def parse_ledger(rows: list[list[str]], header_at: int, cols: dict):
                 "row": n,
             }
         )
-    return lines, errors, notes
+    if stack and totals:
+        # QuickBooks closes every section with its Total line; a file that
+        # stops inside one was cut there (Save as CSV stops at 32,768 rows)
+        cut["ends_in"] = ":".join(name for _, name, _ in stack)
+    if not (cut["sections"] or cut["unreadable"] or cut["ends_in"]):
+        cut = {}
+    return lines, errors, notes, cut
+
+
+def _off(group) -> Decimal:
+    return sum((ln["debit"] - ln["credit"] for ln in group), Decimal("0"))
 
 
 def group_journals(lines: list[dict]) -> tuple[list[list[dict]], list[str]]:
@@ -226,12 +263,27 @@ def group_journals(lines: list[dict]) -> tuple[list[list[dict]], list[str]]:
     and not the other: two halves of the same type and day that balance
     each other are one entry. A transaction that still does not balance is
     named."""
+    journals, unbalanced = group_transactions(lines)
+    return journals, [_unbalanced_words(group) for group in unbalanced]
+
+
+def _unbalanced_words(group: list[dict]) -> str:
+    first = group[0]
+    label = f"{first['type']} {first['num']}".strip()
+    return (
+        f"{label} of {first['date']:%m/%d/%Y} does not balance ({_off(group):,.2f} "
+        f"over {len(group)} lines, rows {', '.join(str(ln['row']) for ln in group[:6])})"
+    )
+
+
+def group_transactions(
+    lines: list[dict],
+) -> tuple[list[list[dict]], list[list[dict]]]:
+    """(journals, unbalanced): the balanced journals group_journals makes,
+    and the lines of each transaction that still does not balance."""
     by_key: OrderedDict = OrderedDict()
     for ln in lines:
         by_key.setdefault((ln["type"], ln["date"], ln["num"]), []).append(ln)
-
-    def off(group):
-        return sum((ln["debit"] - ln["credit"] for ln in group), Decimal("0"))
 
     journals: list[list[dict]] = []
     loose: list[list[dict]] = []
@@ -239,14 +291,14 @@ def group_journals(lines: list[dict]) -> tuple[list[list[dict]], list[str]]:
         by_name: OrderedDict = OrderedDict()
         for ln in group:
             by_name.setdefault(ln["name"], []).append(ln)
-        if len(by_name) > 1 and all(off(part) == 0 for part in by_name.values()):
+        if len(by_name) > 1 and all(_off(part) == 0 for part in by_name.values()):
             journals.extend(by_name.values())
-        elif off(group) == 0:
+        elif _off(group) == 0:
             journals.append(group)
         else:
             loose.append(group)
-    errors: list[str] = []
-    journals.extend(_combine_split_numbers(loose, off))
+    unbalanced: list[list[dict]] = []
+    journals.extend(_combine_split_numbers(loose, _off))
     while loose:
         group = loose.pop(0)
         first = group[0]
@@ -256,7 +308,7 @@ def group_journals(lines: list[dict]) -> tuple[list[list[dict]], list[str]]:
                 for other in loose
                 if other[0]["type"] == first["type"]
                 and other[0]["date"] == first["date"]
-                and off(other) == -off(group)
+                and _off(other) == -_off(group)
                 and (not other[0]["num"] or not first["num"])
             ),
             None,
@@ -266,13 +318,9 @@ def group_journals(lines: list[dict]) -> tuple[list[list[dict]], list[str]]:
             numbered = group if first["num"] else mate
             journals.append(numbered + (mate if numbered is group else group))
             continue
-        label = f"{first['type']} {first['num']}".strip()
-        errors.append(
-            f"{label} of {first['date']:%m/%d/%Y} does not balance ({off(group):,.2f} "
-            f"over {len(group)} lines, rows {', '.join(str(ln['row']) for ln in group[:6])})"
-        )
+        unbalanced.append(group)
     journals.sort(key=lambda j: (j[0]["date"], j[0]["row"]))
-    return journals, errors
+    return journals, unbalanced
 
 
 # How many same-day numbered halves one unnumbered half is tried against.
@@ -349,6 +397,21 @@ def _import_key(journal: list[dict], seen: dict) -> str:
 OTHER_SECTION_SUFFIX = " - Other"
 
 
+def _other_section_target(path: str) -> str | None:
+    """The path of the account a "<Parent> - Other" section belongs to, or
+    None for any other section."""
+    segments = [part.strip() for part in path.split(":") if part.strip()]
+    if not segments or not segments[-1].endswith(OTHER_SECTION_SUFFIX):
+        return None
+    leaf = segments[-1][: -len(OTHER_SECTION_SUFFIX)].strip()
+    if not leaf:
+        return None
+    parents = segments[:-1]
+    if parents and parents[-1].lower() == leaf.lower():
+        return ":".join(parents)
+    return ":".join(parents + [leaf])
+
+
 def _parent_of_other_section(db: Session, path: str):
     """The account a "<Parent> - Other" section belongs to. When a parent
     account has sub-accounts, QuickBooks reports the parent's own postings
@@ -360,16 +423,218 @@ def _parent_of_other_section(db: Session, path: str):
     export carries one label column."""
     from app.services.iif_import import _find_account
 
+    target = _other_section_target(path)
+    return _find_account(db, target) if target else None
+
+
+# The account types an account missing from the chart can be made with
+# (#663), QuickBooks' own as the chart's form offers them: Accounts
+# Receivable and Payable belong to 1100 and 2000 alone.
+ACCOUNT_TYPES = tuple(
+    d
+    for d in DETAIL_TYPES
+    if d not in (DetailType.ACCOUNTS_RECEIVABLE, DetailType.ACCOUNTS_PAYABLE)
+)
+_BANK_KINDS = {DetailType.BANK: "bank", DetailType.CREDIT_CARD: "credit_card"}
+
+# Where an accepted transaction that does not balance in the file puts its
+# difference (#663), made on first use. Equity, as 3900 Opening Balance
+# Equity holds what bringing books across leaves over: the balance stays on
+# the balance sheet until someone clears it, where an expense account would
+# close it into Retained Earnings at the year end. 3950 sits beside 3900 and
+# is no control account, no seeded one and none another feature makes.
+DIFFERENCES_NUMBER = "3950"
+DIFFERENCES_NAME = "Import Differences"
+DIFFERENCE_MEMO = "Difference in the QuickBooks file"
+_UNREAD_ANSWERS = "The answers to the file's problems could not be read."
+
+
+def read_answers(raw) -> dict | None:
+    """The person's answers to a file's problems, as the page sends them
+    (#663): {"unbalanced": [import key, ...], "accounts": {path: account
+    type}, "cut_off": true}. None when none were sent (a first upload).
+    A problem the answers do not accept is left out."""
+    if raw is None or not str(raw).strip():
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        data = None
+    if not isinstance(data, dict):
+        raise DataProblem(_UNREAD_ANSWERS)
+    keys = data.get("unbalanced") or []
+    chosen = data.get("accounts") or {}
+    if (
+        not isinstance(keys, list)
+        or not all(isinstance(k, str) for k in keys)
+        or not isinstance(chosen, dict)
+    ):
+        raise DataProblem(_UNREAD_ANSWERS)
+    offered = {d.value: d for d in ACCOUNT_TYPES}
+    types = {}
+    for path, value in chosen.items():
+        if not isinstance(value, str) or value not in offered:
+            raise DataProblem(
+                f"The type chosen for {path} ({value}) is not one the import can make."
+            )
+        types[str(path)] = offered[value]
+    return {
+        "unbalanced": set(keys),
+        "accounts": types,
+        "cut_off": data.get("cut_off") is True,
+    }
+
+
+def _find_differences(db: Session):
+    """3950 Import Differences by its number first, as Opening Balance
+    Equity is found, so one renamed is still the one."""
+    return (
+        db.query(Account)
+        .filter(
+            Account.account_number == DIFFERENCES_NUMBER,
+            Account.account_type == AccountType.EQUITY,
+        )
+        .first()
+    ) or db.query(Account).filter(Account.name == DIFFERENCES_NAME).first()
+
+
+def _differences_label(db: Session) -> str:
+    found = _find_differences(db)
+    if found is not None:
+        return label_for(found, db)
+    return account_label(
+        DIFFERENCES_NUMBER, DIFFERENCES_NAME, use_account_numbers(db), " "
+    )
+
+
+def _make_account(db: Session, path: str, detail: DetailType) -> Account:
+    """The account at `path`, made with the type the person chose, with any
+    parent the chart lacks made the same type (in QuickBooks a sub-account
+    shares its parent's)."""
+    from app.services.iif_import import _account_at_path
+
     segments = [part.strip() for part in path.split(":") if part.strip()]
-    if not segments or not segments[-1].endswith(OTHER_SECTION_SUFFIX):
-        return None
-    leaf = segments[-1][: -len(OTHER_SECTION_SUFFIX)].strip()
-    if not leaf:
-        return None
-    parents = segments[:-1]
-    if parents and parents[-1].lower() == leaf.lower():
-        return _find_account(db, ":".join(parents))
-    return _find_account(db, ":".join(parents + [leaf]))
+    parent = None
+    for depth in range(1, len(segments) + 1):
+        acct = _account_at_path(db, segments[:depth])
+        if acct is None:
+            acct = Account(
+                name=segments[depth - 1][:200],
+                account_type=BASE_TYPE_OF[detail],
+                detail_type=detail,
+                bank_kind=_BANK_KINDS.get(detail),
+                parent_id=parent.id if parent is not None else None,
+                balance=Decimal("0"),
+            )
+            db.add(acct)
+            db.flush()
+        parent = acct
+    return parent
+
+
+def _cut_off_problem(cut: dict) -> dict:
+    details = [
+        f"The lines under {s['path']} come to {s['debit']:,.2f} debit and "
+        f"{s['credit']:,.2f} credit, and QuickBooks' total says "
+        f"{s['total_debit']:,.2f} and {s['total_credit']:,.2f}."
+        for s in cut["sections"]
+    ]
+    if cut["ends_in"]:
+        details.append(
+            f"The file ends inside {cut['ends_in']}, before QuickBooks' Total "
+            "line for it."
+        )
+    details += cut["unreadable"]
+    return {
+        "kind": "cut_off",
+        "key": "file",
+        "details": details,
+        "sections": [
+            {k: (f"{v:.2f}" if isinstance(v, Decimal) else v) for k, v in s.items()}
+            for s in cut["sections"]
+        ],
+        "text": " ".join(details),
+    }
+
+
+def _unbalanced_problem(txn: dict) -> dict:
+    journal = txn["lines"]
+    first = journal[0]
+    names = [ln["name"] for ln in journal if ln["name"]]
+    debit = sum((ln["debit"] for ln in journal), Decimal("0"))
+    credit = sum((ln["credit"] for ln in journal), Decimal("0"))
+    return {
+        "kind": "unbalanced",
+        "key": txn["key"],
+        "date": first["date"].isoformat(),
+        "type": first["type"],
+        "num": first["num"],
+        "name": names[0] if names else "",
+        "amount": f"{max(debit, credit):.2f}",
+        "off": f"{debit - credit:.2f}",
+        "rows": [ln["row"] for ln in journal],
+        "text": _unbalanced_words(journal),
+    }
+
+
+def _problems(pending: list[dict], cut: dict, missing: dict) -> list[dict]:
+    """What the person answers before anything posts, among the
+    transactions not in the books already: a notice when the file looks
+    cut short or edited, each account not in the chart with how many
+    transactions touch it, and each transaction that does not balance,
+    every one however many (discussion #349)."""
+    if not pending:
+        return []
+    out = [_cut_off_problem(cut)] if cut else []
+    for target in OrderedDict.fromkeys(missing.values()):
+        n = sum(1 for t in pending if target in t["needs"])
+        if not n:
+            continue
+        touching = f"{n} transaction{'s' if n != 1 else ''}"
+        out.append(
+            {
+                "kind": "missing_account",
+                "key": target,
+                "path": target,
+                "transactions": n,
+                "text": f"{target} is not in the chart ({touching})",
+            }
+        )
+    out += [_unbalanced_problem(t) for t in pending if not t["balanced"]]
+    return out
+
+
+def _problem_notes(db: Session, problems: list[dict]) -> dict:
+    """Each kind's sentences for the page: what is likely wrong, and what a
+    tick does."""
+    kinds = {p["kind"] for p in problems}
+    notes = {}
+    if "cut_off" in kinds:
+        notes["cut_off"] = (
+            "The file looks cut short or edited. QuickBooks' Save as CSV stops a "
+            "report at 32,768 rows without a warning, so export it again for a "
+            "shorter date range: one year per file, or a year in two files split "
+            "at a month end, imported oldest first. Ticked, the import takes what "
+            "is there; unticked, nothing is imported."
+        )
+    if "missing_account" in kinds:
+        notes["missing_account"] = (
+            "These accounts are in the report and not in the chart. Import the "
+            "lists first (in QuickBooks: File > Utilities > Export > Lists to IIF "
+            "Files), then this report; or choose a type and tick an account to "
+            "make it now. A transaction that touches an account left unticked is "
+            "left out."
+        )
+    if "unbalanced" in kinds:
+        notes["unbalanced"] = (
+            "These transactions do not balance in the file. A report filtered to "
+            "some accounts leaves their other side out: set Customize Report > "
+            "Filters > Account to All accounts. Ticked, one posts with its "
+            f"difference on {_differences_label(db)}, an equity account, for you "
+            "or your accountant to clear. Unticked, it is left out, and a "
+            "corrected file brings it in later."
+        )
+    return notes
 
 
 def import_ledger_report(
@@ -379,11 +644,17 @@ def import_ledger_report(
     cols: dict,
     adjusting_only: bool = False,
     posted_by: str = None,
+    answers: dict | None = None,
 ) -> dict:
     """``adjusting_only`` (#344): the report is an accountant's adjustments
     — General Journal rows only, refused whole when it holds anything
     else, so a whole-ledger upload can never double the books — and what
-    posts is marked adjusting (#341), in ``posted_by``'s name."""
+    posts is marked adjusting (#341), in ``posted_by``'s name.
+
+    ``answers`` (#663, read_answers): None on a first upload, which posts
+    nothing when the file has problems and answers with ``ready``,
+    ``problems`` and ``problem_notes``. Given, what checks out posts with
+    what they accept, and ``accepted`` and ``left_out`` say the rest."""
     from app.services.iif_import import _find_account
 
     result = {
@@ -393,13 +664,16 @@ def import_ledger_report(
         "warnings": [],
         "adjusting": bool(adjusting_only),
     }
-    lines, errors, notes = parse_ledger(rows, header_at, cols)
+    lines, errors, notes, cut = parse_ledger(rows, header_at, cols)
     result["warnings"].extend(notes)
     if errors:
         result["errors"] = errors
         return result
     if not lines:
-        result["errors"].append("The report has no transactions in it. " + _HOW)
+        # rows that could not be read say so, before "no transactions"
+        result["errors"] = (cut or {}).get("unreadable") or [
+            "The report has no transactions in it. " + _HOW
+        ]
         return result
     if adjusting_only:
         others: dict[str, int] = {}
@@ -419,30 +693,15 @@ def import_ledger_report(
             )
             return result
     accounts = {}
-    missing = []
+    missing = {}  # a section's path: the path of the account it needs
     for path in OrderedDict.fromkeys(ln["path"] for ln in lines):
         acct = _find_account(db, path)
         if acct is None:
             acct = _parent_of_other_section(db, path)
         if acct is None:
-            missing.append(path)
+            missing[path] = _other_section_target(path) or path
         accounts[path] = acct
-    if missing:
-        result["errors"].append(
-            f"{len(missing)} account(s) in the report are not in the chart: "
-            + ", ".join(missing[:12])
-            + (" …" if len(missing) > 12 else "")
-            + ". Import the lists first (in QuickBooks: File > Utilities > Export > "
-            "Lists to IIF Files), then this report."
-        )
-        return result
-    journals, errors = group_journals(lines)
-    if errors:
-        # The whole list, however long: it stopped at twenty with "and 14,070
-        # more", and the person asked where the rest were (discussion #349).
-        # The page counts them and saves the list as a file.
-        result["errors"] = errors
-        return result
+    journals, unbalanced = group_transactions(lines)
     # each entry's key: its source_ref, else (an entry the 2.31.2 upgrade
     # could not read back) the reference that held it before
     have = {
@@ -451,7 +710,58 @@ def import_ledger_report(
             Transaction.source_type == SOURCE_TYPE
         )
     }
+    # the balanced ones are keyed first, as before #663, so their keys are
+    # the ones an earlier upload of them made whatever else this file holds
     seen: dict = {}
+    txns = [
+        {"lines": j, "key": _import_key(j, seen), "balanced": True} for j in journals
+    ]
+    txns += [
+        {"lines": g, "key": _import_key(g, seen), "balanced": False} for g in unbalanced
+    ]
+    txns.sort(key=lambda t: (t["lines"][0]["date"], t["lines"][0]["row"]))
+    for t in txns:
+        t["needs"] = {missing[ln["path"]] for ln in t["lines"] if ln["path"] in missing}
+    pending = [t for t in txns if t["key"] not in have]
+    problems = _problems(pending, cut, missing)
+    if cut and not pending:
+        result["warnings"].append(_cut_off_problem(cut)["text"])
+    if problems and answers is None:
+        # nothing posts before the person has seen them
+        result["duplicates_skipped"] = len(txns) - len(pending)
+        result["ready"] = sum(1 for t in pending if t["balanced"] and not t["needs"])
+        result["problems"] = problems
+        result["problem_notes"] = _problem_notes(db, problems)
+        if any(p["kind"] == "missing_account" for p in problems):
+            result["account_types"] = [
+                {
+                    "value": d.value,
+                    "label": DETAIL_TYPES[d][0],
+                    "account_type": BASE_TYPE_OF[d].value,
+                }
+                for d in ACCOUNT_TYPES
+            ]
+        return result
+    answers = answers or {"unbalanced": set(), "accounts": {}, "cut_off": False}
+    if cut and problems and not answers["cut_off"]:
+        result["duplicates_skipped"] = len(txns) - len(pending)
+        result["errors"].append(
+            "Nothing was imported: the file looks cut short or edited, and "
+            "importing what is there was not chosen. Export it again for a "
+            "shorter date range and import that."
+        )
+        return result
+    made = {}
+    for target in OrderedDict.fromkeys(missing.values()):
+        detail = answers["accounts"].get(target)
+        if detail is not None and any(target in t["needs"] for t in pending):
+            made[target] = _make_account(db, target, detail)
+    for path, target in missing.items():
+        if target in made:
+            accounts[path] = made[target]
+    left_out = {"unbalanced": 0, "missing_account": 0}
+    accepted = 0
+    differences = None
     touches_control = 0
     from app.services.accounting import get_ap_account_id, get_ar_account_id
 
@@ -459,10 +769,17 @@ def import_ledger_report(
         control = {get_ar_account_id(db), get_ap_account_id(db)}
     except Exception:
         control = set()
-    for journal in journals:
-        key = _import_key(journal, seen)
+    for t in txns:
+        key, journal = t["key"], t["lines"]
         if key in have:
             result["duplicates_skipped"] += 1
+            continue
+        # counted once, under the first reason it is left out
+        if t["needs"] - made.keys():
+            left_out["missing_account"] += 1
+            continue
+        if not t["balanced"] and key not in answers["unbalanced"]:
+            left_out["unbalanced"] += 1
             continue
         first = journal[0]
         names = [ln["name"] for ln in journal if ln["name"]]
@@ -475,6 +792,21 @@ def import_ledger_report(
             }
             for ln in journal
         ]
+        if not t["balanced"]:
+            if differences is None:
+                differences = _find_differences(db) or ensure_account(
+                    db, DIFFERENCES_NUMBER, DIFFERENCES_NAME, AccountType.EQUITY
+                )
+            off = _off(journal)
+            posted.append(
+                {
+                    "account_id": differences.id,
+                    "debit": -off if off < 0 else Decimal("0"),
+                    "credit": off if off > 0 else Decimal("0"),
+                    "description": DIFFERENCE_MEMO,
+                }
+            )
+            accepted += 1
         if any(p["account_id"] in control for p in posted):
             touches_control += 1
         # as a register entry reads (#663): QuickBooks' Name is the payee
@@ -500,5 +832,14 @@ def import_ledger_report(
             "Accounts Payable. The A/R and A/P aging read invoices and bills, so "
             "enter the ones still open as documents after the import."
         )
+    if problems:
+        result["accepted"] = {
+            "unbalanced": accepted,
+            "accounts": list(made),
+            "cut_off": bool(cut),
+        }
+        result["left_out"] = left_out
+        if differences is not None:
+            result["differences_account"] = label_for(differences, db)
     db.commit()
     return result

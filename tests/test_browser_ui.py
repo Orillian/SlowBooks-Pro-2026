@@ -31,6 +31,10 @@ or its Chromium is not installed.
   edge, behind a sideways scrollbar. Opened for an employee with a state in
   Q1 and Q2 at 1280 x 800, in both themes; the state inputs still take the
   keyboard in order.
+- #663: a Transaction Detail by Account file with problems posts nothing on
+  its first upload; the page lists them by kind with a box to tick each,
+  and Import sends the same file again with the answers. Driven through
+  the real page, its text checked at AA in both themes.
 """
 
 import json
@@ -748,6 +752,253 @@ def test_a_report_csv_import_with_errors_says_so(browser):
             "Imported 0 records, 1 error: see the list below",
             "Interoperability — Import finished with errors",
         ]
+    finally:
+        page.close()
+
+
+# ── #663: a ledger file's problems, answered before anything posts ───────
+
+LEDGER_PROBLEMS = {
+    "detected": "ledger",
+    "journals": 0,
+    "duplicates_skipped": 2,
+    "errors": [],
+    "warnings": [],
+    "ready": 5,
+    "problems": [
+        {
+            "kind": "cut_off",
+            "key": "file",
+            "details": [
+                "The lines under Rent come to 1,000.00 debit and 0.00 credit, and "
+                "QuickBooks' total says 1,100.00 and 0.00."
+            ],
+            "text": "The lines under Rent come to 1,000.00 debit and 0.00 credit.",
+        },
+        {
+            "kind": "missing_account",
+            "key": "Card Fees",
+            "path": "Card Fees",
+            "transactions": 2,
+            "text": "Card Fees is not in the chart (2 transactions)",
+        },
+        {
+            "kind": "missing_account",
+            "key": "Office Expense:Postage",
+            "path": "Office Expense:Postage",
+            "transactions": 1,
+            "text": "Office Expense:Postage is not in the chart (1 transaction)",
+        },
+    ]
+    + [
+        {
+            "kind": "unbalanced",
+            "key": f"Check {1001 + n} · 2024-01-{n + 2:02d} · Harbor Properties",
+            "date": f"2024-01-{n + 2:02d}",
+            "type": "Check",
+            "num": str(1001 + n),
+            "name": "Harbor Properties",
+            "amount": "1010.00",
+            "off": "10.00",
+            "rows": [8 + n],
+            "text": f"Check {1001 + n} does not balance",
+        }
+        for n in range(3)
+    ],
+    "problem_notes": {
+        "cut_off": "The file looks cut short or edited. QuickBooks' Save as CSV "
+        "stops a report at 32,768 rows without a warning.",
+        "missing_account": "These accounts are in the report and not in the chart. "
+        "Import the lists first (in QuickBooks: File > Utilities > Export > Lists "
+        "to IIF Files), then this report.",
+        "unbalanced": "These transactions do not balance in the file. Ticked, one "
+        "posts with its difference on 3950 Import Differences.",
+    },
+    "account_types": [
+        {"value": "bank", "label": "Bank", "account_type": "asset"},
+        {"value": "equity", "label": "Equity", "account_type": "equity"},
+        {"value": "expense", "label": "Expense", "account_type": "expense"},
+        {"value": "other_expense", "label": "Other Expense", "account_type": "expense"},
+    ],
+}
+LEDGER_ANSWERED = {
+    "detected": "ledger",
+    "journals": 7,
+    "duplicates_skipped": 2,
+    "errors": [],
+    "warnings": [],
+    "accepted": {"unbalanced": 1, "accounts": ["Card Fees"], "cut_off": True},
+    "left_out": {"unbalanced": 2, "missing_account": 1},
+    "differences_account": "3950 Import Differences",
+}
+
+PROBLEM_LIST = """() => {
+    const box = document.getElementById('qbr');
+    const group = (kind) => box.querySelector(`[data-kind="${kind}"]`);
+    const picks = (kind) => [...box.querySelectorAll(`input.qbr-pick[data-kind="${kind}"]`)];
+    return {
+        groups: [...box.querySelectorAll('section.qbr-group h5')].map(h => h.textContent.trim()),
+        notes: ['cut_off', 'missing_account', 'unbalanced'].map(k => group(k).querySelector('.qbr-note').textContent.trim().slice(0, 40)),
+        ticked: Object.fromEntries(['cut_off', 'missing_account', 'unbalanced'].map(k => [k, picks(k).map(b => b.checked)])),
+        disabled: picks('missing_account').map(b => b.disabled),
+        counts: [...box.querySelectorAll('.qbr-count')].map(c => c.textContent),
+        importable: !document.getElementById('qbr-import').disabled,
+        hint: document.getElementById('qbr-hint').textContent,
+        scrolls: [...box.querySelectorAll('.qbr-scroll')].map(s => getComputedStyle(s).overflowY),
+    };
+}"""
+
+
+def _problem_page(browser, sent):
+    def answer(route):
+        sent.append(route.request.post_data_buffer or b"")
+        route.fulfill(json=LEDGER_PROBLEMS if len(sent) == 1 else LEDGER_ANSWERED)
+
+    page = _open(browser, 1280, 800, "#/iif")
+    page.route("**/api/csv/import/qb-report", answer)
+    page.wait_for_selector("#qbcsv-file-input", state="attached")
+    page.set_input_files(
+        "#qbcsv-file-input",
+        files=[
+            {
+                "name": "Transaction Detail by Account.csv",
+                "mimeType": "text/csv",
+                "buffer": b"Type,Date,Num\r\n",
+            }
+        ],
+    )
+    page.evaluate("() => IIFPage.importQbReportCsv()")
+    page.wait_for_selector("#qbr")
+    return page
+
+
+def _form_field(body: bytes, name: str) -> str:
+    import re
+
+    m = re.search(
+        rb'name="'
+        + name.encode()
+        + rb'"(?:; filename="[^"]*")?\r\n(?:[^\r\n]+\r\n)*\r\n(.*?)\r\n--',
+        body,
+        re.S,
+    )
+    return m.group(1).decode() if m else None
+
+
+def test_a_ledger_files_problems_are_listed_and_answered(browser):
+    sent = []
+    page = _problem_page(browser, sent)
+    try:
+        seen = page.evaluate(PROBLEM_LIST)
+        assert seen["groups"] == [
+            "The file may be cut off",
+            "2 accounts not in the chart",
+            "3 transactions that do not balance",
+        ]
+        assert seen["notes"] == [
+            "The file looks cut short or edited. Quic",
+            "These accounts are in the report and not",
+            "These transactions do not balance in the",
+        ]
+        assert seen["scrolls"] == ["auto", "auto"]
+        # nothing ticked; an account cannot be without a type; the notice
+        # unticked holds Import, and says why
+        assert seen["ticked"] == {
+            "cut_off": [False],
+            "missing_account": [False, False],
+            "unbalanced": [False, False, False],
+        }
+        assert seen["disabled"] == [True, True]
+        assert seen["counts"] == ["0 of 2 ticked", "0 of 3 ticked"]
+        assert not seen["importable"] and "Import what is there" in seen["hint"]
+        assert _last_toast_and_status(page) == [
+            "toast toast-warning",
+            "Nothing imported yet: 6 problems to decide below",
+            "Interoperability — Choose what to import",
+        ]
+        # every box is named, the type picker too
+        named = page.get_by_role("checkbox", name="Import what is there")
+        assert named.count() == 1
+        account = page.get_by_role("checkbox", name="Make the account Card Fees")
+        page.get_by_role("combobox", name="Type for Card Fees").select_option("expense")
+        assert account.is_enabled() and account.is_checked()
+        # Select all and none, per group: the account with no type stays out
+        unbalanced = page.locator("#qbr [data-kind=unbalanced]")
+        unbalanced.get_by_role("button", name="Select all").click()
+        page.locator("#qbr [data-kind=missing_account]").get_by_role(
+            "button", name="Select all"
+        ).click()
+        seen = page.evaluate(PROBLEM_LIST)
+        assert seen["ticked"]["unbalanced"] == [True, True, True]
+        assert seen["ticked"]["missing_account"] == [True, False]
+        assert seen["counts"] == ["1 of 2 ticked", "3 of 3 ticked"]
+        unbalanced.get_by_role("button", name="Select none").click()
+        assert page.evaluate(PROBLEM_LIST)["ticked"]["unbalanced"] == [False] * 3
+        page.get_by_role(
+            "checkbox",
+            name="Import Check 1002 of Jan 3, 2024, Harbor Properties, off by $10.00",
+        ).check()
+        page.get_by_role("checkbox", name="Import what is there").check()
+        assert page.evaluate(PROBLEM_LIST)["importable"]
+        page.evaluate(
+            "() => document.getElementById('toast-container').replaceChildren()"
+        )
+        page.click("#qbr-import")
+        page.wait_for_selector("#qbcsv-import-result .iif-results:not(.qbr)")
+        # the same file again, with the answers
+        assert len(sent) == 2
+        assert _form_field(sent[0], "answers") is None
+        assert _form_field(sent[1], "file") == _form_field(sent[0], "file")
+        assert json.loads(_form_field(sent[1], "answers")) == {
+            "unbalanced": ["Check 1002 · 2024-01-03 · Harbor Properties"],
+            "accounts": {"Card Fees": "expense"},
+            "cut_off": True,
+        }
+        rows = page.evaluate(
+            """() => [...document.querySelectorAll('#qbcsv-import-result .result-row')]
+                .map(r => r.children.length
+                    ? [...r.children].map(c => c.textContent.trim()).join(' | ')
+                    : r.textContent.trim())"""
+        )
+        assert rows == [
+            "Detected report | Transaction Detail by Account",
+            "Journal entries | 7 imported",
+            "Accepted, the difference on 3950 Import Differences | 1",
+            "Accounts made | 1",
+            "Card Fees",
+            "The file looked cut off; what was in it was imported.",
+            "Left out: did not balance | 2",
+            "Left out: an account not in the chart | 1",
+            "Duplicates skipped | 2",
+        ]
+        assert _last_toast_and_status(page) == [
+            "toast toast-success",
+            "Imported 7 records",
+            "Interoperability — Import complete",
+        ]
+    finally:
+        page.close()
+
+
+def test_the_problem_list_reads_at_aa_in_both_themes(browser):
+    from tests.test_theme_contrast import _theme, below_threshold, sweep_of
+
+    sent = []
+    page = _problem_page(browser, sent)
+    try:
+        page.get_by_role("combobox", name="Type for Card Fees").select_option("expense")
+        sweeps = {}
+        for theme in ("light", "dark"):
+            _theme(page, theme)
+            sweeps[(theme, "#/iif problems")] = page.evaluate(
+                sweep_of("document.getElementById('qbr')")
+            )
+        assert all(sweeps.values()), sweeps
+        assert below_threshold(sweeps) == []
+        # Cancel takes the list away; nothing was sent again
+        page.get_by_role("button", name="Cancel").click()
+        assert page.inner_html("#qbcsv-import-result") == ""
+        assert len(sent) == 1
     finally:
         page.close()
 

@@ -207,54 +207,277 @@ const IIFPage = {
     async importQbReportCsv() {
         const input = $('#qbcsv-file-input');
         if (!input?.files[0]) { toast('Choose a file first', 'error'); return; }
+        // kept for a file with problems, sent again with the answers (#663)
+        IIFPage._qbReport = {
+            file: input.files[0],
+            adjusting: !!$('#qbcsv-adjusting-only')?.checked,
+            outflow: !!$('#qbcsv-outflow-positive')?.checked,
+        };
+        await IIFPage._sendQbReport(null);
+    },
+
+    async _sendQbReport(answers) {
+        const sent = IIFPage._qbReport;
         const formData = new FormData();
-        formData.append('file', input.files[0]);
-        formData.append('adjusting_only', $('#qbcsv-adjusting-only')?.checked ? 'true' : 'false');
-        formData.append('outflow_positive', $('#qbcsv-outflow-positive')?.checked ? 'true' : 'false');
+        formData.append('file', sent.file);
+        formData.append('adjusting_only', sent.adjusting ? 'true' : 'false');
+        formData.append('outflow_positive', sent.outflow ? 'true' : 'false');
+        if (answers) formData.append('answers', JSON.stringify(answers));
         try {
             App.setStatus('Importing QuickBooks report CSV...');
             const res = await fetch('/api/csv/import/qb-report', { method: 'POST', body: formData });
             if (!res.ok) throw new Error(await API.responseError(res, 'Import failed'));
             const result = await res.json();
-
-            const kindLabel = { sales_receipts: 'Sales Receipts', invoices: 'Invoices', sales_and_invoices: 'Sales Receipts and Invoices', deposits: 'Deposits', checks: 'Checks', ledger: 'Transaction Detail by Account', journals: 'Journal entries', time: 'Time by Name by Job detail', time_entries: 'Time entries', categorized: 'Categorized bank sheet', posted: 'Register entries', splits: 'Split entries' };
-            let html = '<div class="iif-results"><h4>Results</h4>';
-            if (result.detected) {
-                html += `<div class="result-row"><span>Detected report</span><span class="result-count">${escapeHtml(result.report || kindLabel[result.detected] || result.detected)}</span></div>`;
+            if (result.problems?.length) {
+                IIFPage._showProblems(result);
+                return;
             }
-            for (const key of ['sales_receipts', 'invoices', 'deposits', 'checks', 'journals', 'time_entries', 'posted', 'splits']) {
-                if (result[key] > 0) {
-                    const how = key === 'journals' && result.adjusting ? ' imported as adjusting entries' : ' imported';
-                    html += `<div class="result-row"><span>${kindLabel[key]}</span><span class="result-count">${result[key]}${how}</span></div>`;
-                }
-            }
-            if (result.invoices > 0) {
-                html += `<div class="result-row"><span style="font-size:11px;color:var(--gray-500)">${result.invoices_open || 0} open, ${result.invoices_partly_paid || 0} partly paid, ${result.invoices_paid || 0} paid</span></div>`;
-            }
-            if (result.invoices_updated > 0) {
-                html += `<div class="result-row"><span>Already here, marked paid or partly paid from Open Balance</span><span class="result-count">${result.invoices_updated}</span></div>`;
-            }
-            if (result.duplicates_skipped > 0) {
-                html += `<div class="result-row"><span>Duplicates skipped</span><span class="result-count">${result.duplicates_skipped}</span></div>`;
-            }
-            html += '</div>';
-            if (result.warnings?.length) {
-                // a warning sits in the warnings box, as the IIF import's do
-                // (it sat in the error box with an orange border)
-                html += '<div class="iif-warnings">';
-                result.warnings.forEach(w => { html += `${escapeHtml(w)}<br>`; });
-                html += '</div>';
-            }
-            if (result.errors?.length) {
-                html += IIFPage._errorBox(result.errors.map(e => typeof e === 'string' ? e : JSON.stringify(e)), 'qbcsv');
-            }
-            $('#qbcsv-import-result').innerHTML = html;
-            const total = (result.sales_receipts || 0) + (result.invoices || 0) + (result.deposits || 0) + (result.checks || 0) + (result.journals || 0) + (result.time_entries || 0) + (result.posted || 0);  // + the categorized sheet's register entries (W-21)
-            IIFPage._reportImport(total, (result.errors || []).length);
+            IIFPage._showQbResult(result);
         } catch (err) {
+            const again = $('#qbr-import');
+            if (again) again.disabled = false;
             toast(err.message, 'error');
             App.setStatus('Import failed');
         }
+    },
+
+    _showQbResult(result) {
+        const kindLabel = { sales_receipts: 'Sales Receipts', invoices: 'Invoices', sales_and_invoices: 'Sales Receipts and Invoices', deposits: 'Deposits', checks: 'Checks', ledger: 'Transaction Detail by Account', journals: 'Journal entries', time: 'Time by Name by Job detail', time_entries: 'Time entries', categorized: 'Categorized bank sheet', posted: 'Register entries', splits: 'Split entries' };
+        let html = '<div class="iif-results"><h4>Results</h4>';
+        if (result.detected) {
+            html += `<div class="result-row"><span>Detected report</span><span class="result-count">${escapeHtml(result.report || kindLabel[result.detected] || result.detected)}</span></div>`;
+        }
+        for (const key of ['sales_receipts', 'invoices', 'deposits', 'checks', 'journals', 'time_entries', 'posted', 'splits']) {
+            if (result[key] > 0) {
+                const how = key === 'journals' && result.adjusting ? ' imported as adjusting entries' : ' imported';
+                html += `<div class="result-row"><span>${kindLabel[key]}</span><span class="result-count">${result[key]}${how}</span></div>`;
+            }
+        }
+        if (result.invoices > 0) {
+            html += `<div class="result-row"><span style="font-size:11px;color:var(--gray-500)">${result.invoices_open || 0} open, ${result.invoices_partly_paid || 0} partly paid, ${result.invoices_paid || 0} paid</span></div>`;
+        }
+        if (result.invoices_updated > 0) {
+            html += `<div class="result-row"><span>Already here, marked paid or partly paid from Open Balance</span><span class="result-count">${result.invoices_updated}</span></div>`;
+        }
+        html += IIFPage._answeredRows(result);
+        if (result.duplicates_skipped > 0) {
+            html += `<div class="result-row"><span>Duplicates skipped</span><span class="result-count">${result.duplicates_skipped}</span></div>`;
+        }
+        html += '</div>';
+        if (result.warnings?.length) {
+            // a warning sits in the warnings box, as the IIF import's do
+            // (it sat in the error box with an orange border)
+            html += '<div class="iif-warnings">';
+            result.warnings.forEach(w => { html += `${escapeHtml(w)}<br>`; });
+            html += '</div>';
+        }
+        if (result.errors?.length) {
+            html += IIFPage._errorBox(result.errors.map(e => typeof e === 'string' ? e : JSON.stringify(e)), 'qbcsv');
+        }
+        IIFPage._wide(false);
+        $('#qbcsv-import-result').innerHTML = html;
+        const total = (result.sales_receipts || 0) + (result.invoices || 0) + (result.deposits || 0) + (result.checks || 0) + (result.journals || 0) + (result.time_entries || 0) + (result.posted || 0);  // + the categorized sheet's register entries (W-21)
+        IIFPage._reportImport(total, (result.errors || []).length);
+    },
+
+    // ==== A ledger file's problems (#663) ====
+    //
+    // A Transaction Detail by Account file with problems posts nothing on
+    // its first upload and answers with them. Each kind is a group here,
+    // every problem in it ticked to accept it or left to leave it out, and
+    // Import sends the same file again with the answers.
+    _qbReport: null,
+
+    _count(n, word) {
+        return `${Number(n || 0).toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
+    },
+
+    _bulk(kind, words) {
+        return `<div class="qbr-bulk" role="group" aria-label="${escapeHtml(words)}">
+            <button type="button" class="btn btn-sm btn-secondary" onclick="IIFPage.reviewAll('${kind}', true)">Select all</button>
+            <button type="button" class="btn btn-sm btn-secondary" onclick="IIFPage.reviewAll('${kind}', false)">Select none</button>
+            <span class="qbr-count" data-count="${kind}" aria-live="polite"></span>
+        </div>`;
+    },
+
+    _typeOptions(types) {
+        const headings = { asset: 'Assets', liability: 'Liabilities', equity: T('Equity'),
+            income: T('Income'), cogs: 'Cost of Goods Sold', expense: 'Expenses' };
+        return '<option value="">Choose a type…</option>' + Object.keys(headings).map(t => {
+            const opts = types.filter(d => d.account_type === t)
+                .map(d => `<option value="${escapeHtml(d.value)}">${escapeHtml(T(d.label))}</option>`).join('');
+            return opts ? `<optgroup label="${escapeHtml(headings[t])}">${opts}</optgroup>` : '';
+        }).join('');
+    },
+
+    _showProblems(result) {
+        const problems = result.problems || [];
+        const notes = result.problem_notes || {};
+        const of = kind => problems.filter(p => p.kind === kind);
+        const [cut] = of('cut_off');
+        const accounts = of('missing_account');
+        const unbalanced = of('unbalanced');
+        const ready = result.ready || 0;
+        const here = result.duplicates_skipped || 0;
+        IIFPage._errors.qbr = problems.map(p => p.text);
+        let html = `<div class="iif-results qbr" id="qbr" role="region" aria-labelledby="qbr-title">
+            <h4 id="qbr-title">Choose what to import</h4>
+            <p class="qbr-lead">Nothing is imported yet. ${IIFPage._count(ready, 'transaction')} ${ready === 1 ? 'is' : 'are'} ready${here ? `, and ${IIFPage._count(here, 'transaction')} already here ${here === 1 ? 'is' : 'are'} skipped` : ''}. The file also has the problems below: tick one to accept it, or leave it unticked to leave it out. Then press Import.</p>
+            <div class="qbr-save"><button type="button" class="btn btn-sm btn-secondary" onclick="IIFPage.saveErrors('qbr')" title="Every problem in this list, as a text file">Save the list</button></div>`;
+        if (cut) {
+            html += `<section class="qbr-group" data-kind="cut_off" aria-labelledby="qbr-h-cut_off">
+                <h5 id="qbr-h-cut_off">The file may be cut off</h5>
+                <p class="qbr-note">${escapeHtml(notes.cut_off || '')}</p>
+                <ul class="qbr-details">${(cut.details || []).map(d => `<li>${escapeHtml(d)}</li>`).join('')}</ul>
+                <label class="qbr-tick"><input type="checkbox" class="qbr-pick" data-kind="cut_off" data-key="file" onchange="IIFPage._reviewChanged()"> Import what is there</label>
+            </section>`;
+        }
+        if (accounts.length) {
+            const options = IIFPage._typeOptions(result.account_types || []);
+            const rows = accounts.map(p => `<tr>
+                    <td class="qbr-pick-cell"><input type="checkbox" class="qbr-pick" data-kind="missing_account" data-key="${escapeHtml(p.key)}" aria-label="Make the account ${escapeHtml(p.path)}" aria-describedby="qbr-type-hint" disabled onchange="IIFPage._reviewChanged()"></td>
+                    <td>${escapeHtml(p.path)}</td>
+                    <td class="amount">${Number(p.transactions).toLocaleString()}</td>
+                    <td><select class="qbr-type" data-no-search aria-label="Type for ${escapeHtml(p.path)}" onchange="IIFPage.reviewTyped(this)">${options}</select></td>
+                </tr>`).join('');
+            html += `<section class="qbr-group" data-kind="missing_account" aria-labelledby="qbr-h-missing_account">
+                <h5 id="qbr-h-missing_account">${IIFPage._count(accounts.length, 'account')} not in the chart</h5>
+                <p class="qbr-note">${escapeHtml(notes.missing_account || '')} <span id="qbr-type-hint">An account is ticked once it has a type.</span></p>
+                ${IIFPage._bulk('missing_account', 'Accounts not in the chart')}
+                <div class="qbr-scroll"><table>
+                    <thead><tr><th scope="col"><span class="visually-hidden">Make it</span></th><th scope="col">Account</th><th scope="col" class="amount">Transactions</th><th scope="col">Type</th></tr></thead>
+                    <tbody>${rows}</tbody>
+                </table></div>
+            </section>`;
+        }
+        if (unbalanced.length) {
+            const rows = unbalanced.map(p => {
+                const what = `${p.type}${p.num ? ` ${p.num}` : ''} of ${formatDate(p.date)}${p.name ? `, ${p.name}` : ''}`;
+                const off = formatCurrency(Math.abs(Number(p.off)));
+                return `<tr>
+                    <td class="qbr-pick-cell"><input type="checkbox" class="qbr-pick" data-kind="unbalanced" data-key="${escapeHtml(p.key)}" aria-label="Import ${escapeHtml(what)}, off by ${escapeHtml(off)}" onchange="IIFPage._reviewChanged()"></td>
+                    <td class="qbr-nowrap">${formatDate(p.date)}</td>
+                    <td>${escapeHtml(p.type)}</td>
+                    <td>${escapeHtml(p.num || '')}</td>
+                    <td>${escapeHtml(p.name || '')}</td>
+                    <td class="amount qbr-nowrap">${formatCurrency(Number(p.amount))}</td>
+                    <td class="amount qbr-nowrap">${off}</td>
+                </tr>`;
+            }).join('');
+            html += `<section class="qbr-group" data-kind="unbalanced" aria-labelledby="qbr-h-unbalanced">
+                <h5 id="qbr-h-unbalanced">${IIFPage._count(unbalanced.length, 'transaction')} that ${unbalanced.length === 1 ? 'does' : 'do'} not balance</h5>
+                <p class="qbr-note">${escapeHtml(notes.unbalanced || '')}</p>
+                ${IIFPage._bulk('unbalanced', 'Transactions that do not balance')}
+                <div class="qbr-scroll"><table>
+                    <thead><tr><th scope="col"><span class="visually-hidden">Import</span></th><th scope="col">Date</th><th scope="col">Type</th><th scope="col">Num</th><th scope="col">Name</th><th scope="col" class="amount">Amount</th><th scope="col" class="amount">Off by</th></tr></thead>
+                    <tbody>${rows}</tbody>
+                </table></div>
+            </section>`;
+        }
+        html += `<div class="qbr-actions">
+                <button type="button" class="btn btn-primary" id="qbr-import" aria-describedby="qbr-hint" onclick="IIFPage.importReviewed()">Import</button>
+                <button type="button" class="btn btn-secondary" onclick="IIFPage.cancelReview()">Cancel</button>
+                <span id="qbr-hint" class="qbr-hint" aria-live="polite"></span>
+            </div></div>`;
+        if (result.warnings?.length) {
+            html += '<div class="iif-warnings">';
+            result.warnings.forEach(w => { html += `${escapeHtml(w)}<br>`; });
+            html += '</div>';
+        }
+        IIFPage._wide(true);
+        $('#qbcsv-import-result').innerHTML = html;
+        IIFPage._reviewChanged();
+        toast(`Nothing imported yet: ${IIFPage._count(problems.length, 'problem')} to decide below`, 'warning');
+        App.setStatus('Interoperability — Choose what to import');
+    },
+
+    _picks(kind) {
+        return [...document.querySelectorAll(`#qbr input.qbr-pick[data-kind="${kind}"]`)];
+    },
+
+    reviewAll(kind, on) {
+        IIFPage._picks(kind).forEach(box => { if (!box.disabled) box.checked = on; });
+        IIFPage._reviewChanged();
+    },
+
+    // a missing account's row is ticked once it has a type, and cannot be
+    // ticked without one
+    reviewTyped(select) {
+        const box = select.closest('tr').querySelector('input.qbr-pick');
+        box.disabled = !select.value;
+        box.checked = !!select.value;
+        IIFPage._reviewChanged();
+    },
+
+    // The groups' counts, and Import held while the file's notice is
+    // unticked: unticked, nothing would be imported.
+    _reviewChanged() {
+        for (const kind of ['missing_account', 'unbalanced']) {
+            const count = document.querySelector(`#qbr [data-count="${kind}"]`);
+            if (!count) continue;
+            const picks = IIFPage._picks(kind);
+            count.textContent = `${picks.filter(b => b.checked).length.toLocaleString()} of ${picks.length.toLocaleString()} ticked`;
+        }
+        const [cut] = IIFPage._picks('cut_off');
+        const held = !!cut && !cut.checked;
+        const button = $('#qbr-import');
+        if (button) button.disabled = held;
+        const hint = $('#qbr-hint');
+        if (hint) hint.textContent = held ? 'Tick “Import what is there” to import from this file.' : '';
+    },
+
+    _answers() {
+        const answers = { unbalanced: [], accounts: {}, cut_off: false };
+        for (const box of document.querySelectorAll('#qbr input.qbr-pick:checked')) {
+            const kind = box.dataset.kind;
+            if (kind === 'unbalanced') answers.unbalanced.push(box.dataset.key);
+            if (kind === 'cut_off') answers.cut_off = true;
+            if (kind === 'missing_account') {
+                const type = box.closest('tr').querySelector('select.qbr-type').value;
+                if (type) answers.accounts[box.dataset.key] = type;
+            }
+        }
+        return answers;
+    },
+
+    async importReviewed() {
+        if (!IIFPage._qbReport) return;
+        const button = $('#qbr-import');
+        if (button) button.disabled = true;
+        await IIFPage._sendQbReport(IIFPage._answers());
+    },
+
+    cancelReview() {
+        IIFPage._qbReport = null;
+        IIFPage._wide(false);
+        $('#qbcsv-import-result').innerHTML = '';
+        App.setStatus('Interoperability — Ready');
+    },
+
+    // the list takes the page's width while it is up: half of it squeezed
+    // the dates and names onto three lines
+    _wide(on) {
+        const box = document.getElementById('qbcsv-import-result');
+        const section = box && box.closest ? box.closest('.iif-section') : null;
+        if (section) section.classList.toggle('iif-section--wide', on);
+    },
+
+    // What a file with problems imported on its second call: what was
+    // accepted and what was left out.
+    _answeredRows(result) {
+        const row = (words, n) => `<div class="result-row"><span>${words}</span><span class="result-count">${n}</span></div>`;
+        const accepted = result.accepted || {};
+        const left = result.left_out || {};
+        let html = '';
+        if (accepted.unbalanced > 0) html += row(`Accepted, the difference on ${escapeHtml(result.differences_account || 'Import Differences')}`, accepted.unbalanced);
+        if (accepted.accounts?.length) {
+            html += row('Accounts made', accepted.accounts.length);
+            html += `<div class="result-row result-row--line">${accepted.accounts.map(escapeHtml).join(', ')}</div>`;
+        }
+        if (accepted.cut_off) html += '<div class="result-row result-row--line">The file looked cut off; what was in it was imported.</div>';
+        if (left.unbalanced > 0) html += row('Left out: did not balance', left.unbalanced);
+        if (left.missing_account > 0) html += row('Left out: an account not in the chart', left.missing_account);
+        return html;
     },
 
     // ==== Export Functions ====
