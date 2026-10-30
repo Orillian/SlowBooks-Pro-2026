@@ -1216,7 +1216,7 @@ const BankingPage = {
     // In the entry row's place while a class is chosen (#663).
     _entryRowOff() {
         const cls = T('class').toLowerCase();
-        return `<tfoot><tr id="reg-quick-entry-off" data-write><td colspan="10" style="font-size:11px; color:var(--gray-500);">The entry row is hidden while a ${cls} is chosen: it has no ${cls} box, and the running balance counts this ${cls} only. Choose All ${T('classes').toLowerCase()} to use it, or post with + Entry.</td></tr></tfoot>`;
+        return `<tfoot><tr id="reg-quick-entry-off" data-write><td colspan="10" style="padding:6px 10px; font-size:11px; color:var(--gray-500);">The entry row is hidden while a ${cls} is chosen: it has no ${cls} box, and the running balance counts this ${cls} only. Choose All ${T('classes').toLowerCase()} to use it, or post with + Entry.</td></tr></tfoot>`;
     },
 
     // Enter in the quick row. As before, it posts the entry, unless the
