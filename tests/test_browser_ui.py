@@ -1580,7 +1580,14 @@ def test_focus_stays_on_import_when_the_answers_are_refused(browser):
         page.evaluate("() => IIFPage.importQbReportCsv()")
         page.wait_for_selector("#qbr")
         page.click("#qbr-import")
-        page.wait_for_function("() => document.activeElement.id === 'qbr-import'")
+        # the click itself focuses Import, while the answers are still out
+        # and the button disabled: wait for the refusal to come back (2.31.2
+        # gate: on LabStudio's slower CPU the check ran before it did)
+        page.wait_for_function(
+            "() => document.body.innerText.includes('The file changed since the list was made')"
+            " && !document.getElementById('qbr-import').disabled"
+            " && document.activeElement.id === 'qbr-import'"
+        )
         assert page.is_visible("#qbr") and page.is_enabled("#qbr-import")
         assert len(sent) == 2
     finally:
