@@ -12,11 +12,13 @@ anything posts (#663).
   do: it is the one refusal left, because a guess would post a wrong date
   or amount. A day-first export (20/03/2024) showed as "the file may be cut
   off", and ticked, 05/03 posted as May 3, 11/04 as November 4, and 20/03
-  was dropped uncounted. A file that is plainly day-first (a first part
-  over 12 and no second part over 12) is read day-first, and says so.
+  was dropped uncounted. SlowBooks is US-only: a date is month/day/year,
+  as QuickBooks Desktop writes it in the United States, and a file with
+  any other date is refused, every such row listed. It was read day-first
+  when one date's first part was over 12, so one garbled 13/01/2024 in a US
+  file posted every 01/05/2024 in it as May 1.
 """
 
-from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -149,40 +151,74 @@ def _day_first(days):
     )
 
 
-def test_a_day_first_file_is_read_day_first_and_says_so(
-    client, db_session, seed_accounts
-):
+def test_a_day_first_file_is_refused_with_its_rows(client, db_session, seed_accounts):
     """The reviewer's file: 05/03 posted as May 3, 11/04 as November 4, and
-    20/03 dropped. One date's first part is over 12 and none's second is,
-    so every date is day/month/year."""
+    20/03 dropped. 05/03 and 11/04 are month/day/year dates, and 20/03 is
+    not one: the file is refused with that date's rows, and the sentence
+    says the dates look day first and how to export month/day/year."""
     data = send(client, _day_first(["05/03/2024", "20/03/2024", "11/04/2024"]))
-    assert data["errors"] == [], data["errors"]
-    assert "problems" not in data
-    assert data["journals"] == 3
-    assert sorted((t.reference, t.date) for t in _imported(db_session)) == [
-        ("101", date(2024, 3, 5)),
-        ("102", date(2024, 3, 20)),
-        ("103", date(2024, 4, 11)),
-    ]
-    assert any("day/month/year" in w for w in data["warnings"]), data["warnings"]
-
-
-def test_a_file_whose_dates_read_neither_way_is_refused(
-    client, db_session, seed_accounts
-):
-    """20/03 is day-first and 03/25 month-first: no reading takes both, so
-    the file is refused with the rows that cannot be read, and what to do."""
-    data = send(client, _day_first(["05/03/2024", "20/03/2024", "03/25/2024"]))
     assert data["journals"] == 0 and "problems" not in data
     assert _imported(db_session) == []
-    errors = data["errors"]
-    assert errors[0].startswith("Nothing was imported: 2 rows could not be read")
-    assert "month/day/year" in errors[0]
-    assert errors[1:] == [
-        "Row 4: the date ('20/03/2024') or an amount ('' / '10.00') could not be read",
-        "Row 9: the date ('20/03/2024') or an amount ('10.00' / '') could not be "
-        "read",
+    lead, *rows = data["errors"]
+    assert rows == [
+        "Row 4: the date ('20/03/2024') is not month/day/year",
+        "Row 9: the date ('20/03/2024') is not month/day/year",
     ]
+    assert lead == (
+        "Nothing was imported: 2 rows could not be read (listed below), and a "
+        "guess would post a wrong date or amount. The dates look day first "
+        "(20/03/2024), and a date is read as month/day/year (01/31/2024), the "
+        "way QuickBooks Desktop writes it in the United States. QuickBooks "
+        "Desktop writes its dates in the order of Windows' region setting: in "
+        "Windows, set the region's format to English (United States) (Control "
+        "Panel > Region), then export the report from QuickBooks again and "
+        "import that."
+    )
+    # nothing is read day-first any more, so nothing says so
+    assert not any("day/month/year" in w for w in data["warnings"])
+
+
+def test_one_garbled_date_never_turns_a_us_file_day_first(
+    client, db_session, seed_accounts
+):
+    """The reviewer's US file: early-month dates and one garbled 13/01/2024.
+    The 13 read the whole file day/month/year, and 01/05/2024 posted as May
+    1. Now the 13/01/2024 rows refuse the file, and nothing posts."""
+    data = send(client, _day_first(["01/05/2024", "13/01/2024", "01/06/2024"]))
+    assert data["journals"] == 0 and _imported(db_session) == []
+    lead, *rows = data["errors"]
+    assert rows == [
+        "Row 4: the date ('13/01/2024') is not month/day/year",
+        "Row 9: the date ('13/01/2024') is not month/day/year",
+    ]
+    assert "The dates look day first (13/01/2024)" in lead
+    assert "English (United States)" in lead
+    # and with the date written month/day/year, it imports as it reads
+    data = send(client, _day_first(["01/05/2024", "01/13/2024", "01/06/2024"]))
+    assert data["errors"] == [] and data["journals"] == 3
+    assert sorted(t.date.isoformat() for t in _imported(db_session)) == [
+        "2024-01-05",
+        "2024-01-06",
+        "2024-01-13",
+    ]
+
+
+def test_a_date_that_reads_no_way_is_refused(client, db_session, seed_accounts):
+    """31/02 is no date in either order, and 2024-03-25 is not one QuickBooks
+    writes: the rows are listed, and the sentence says how a date reads,
+    not that the dates look day first."""
+    data = send(client, _day_first(["05/03/2024", "31/02/2024", "2024-03-25"]))
+    assert data["journals"] == 0 and _imported(db_session) == []
+    lead, *rows = data["errors"]
+    assert rows == [
+        "Row 4: the date ('31/02/2024') is not month/day/year",
+        "Row 5: the date ('2024-03-25') is not month/day/year",
+        "Row 9: the date ('31/02/2024') is not month/day/year",
+        "Row 10: the date ('2024-03-25') is not month/day/year",
+    ]
+    assert lead.startswith("Nothing was imported: 4 rows could not be read")
+    assert "look day first" not in lead
+    assert "A date reads month/day/year (01/31/2024)" in lead
 
 
 @pytest.mark.parametrize(
@@ -203,8 +239,13 @@ def test_an_amount_that_is_not_one_is_refused(client, db_session, seed_accounts,
     ]
     data = send(client, build(rows))
     assert data["journals"] == 0 and _imported(db_session) == []
-    assert data["errors"][0].startswith("Nothing was imported: 2 rows could not")
-    assert len(data["errors"]) == 3
+    lead, *rows = data["errors"]
+    assert lead.startswith("Nothing was imported: 2 rows could not")
+    assert "an amount like 1,234.56" in lead and "look day first" not in lead
+    assert rows == [
+        f"Row 3: an amount ('' / {cell!r}) could not be read",
+        f"Row 6: an amount ({cell!r} / '') could not be read",
+    ]
 
 
 @pytest.mark.parametrize(

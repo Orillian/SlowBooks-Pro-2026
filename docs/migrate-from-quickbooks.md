@@ -144,10 +144,14 @@ with the balance QuickBooks shows. Uploading it again posts nothing twice.
 
 The file is checked first. One that checks out imports at once. A row
 whose date or amount cannot be read refuses the whole file, every such row
-listed: a guess would post a wrong date or amount. QuickBooks writes a date
-as month/day/year and an amount as 1,234.56; a file whose dates are all
-day/month/year (one with a 20/03/2024 in it, and none with a second part
-over 12) is read that way, and the result says so. One with other problems
+listed: a guess would post a wrong date or amount. A date is read as
+month/day/year (01/31/2024), the way QuickBooks Desktop writes it in the
+United States, and an amount as 1,234.56. QuickBooks Desktop writes its
+dates in the order of Windows' region setting, so a report exported under
+another region's format has day-first dates (20/03/2024) and is refused,
+the sentence above the rows saying the dates look day first: in Windows,
+set the region's format to English (United States) (Control Panel >
+Region), export the report again and import that. One with other problems
 imports nothing yet (since 2.31.2): the page lists the problems, grouped,
 for you to tick the ones to accept and leave the rest:
 

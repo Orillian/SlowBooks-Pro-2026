@@ -66,21 +66,31 @@ SOURCE_TYPE = "qb_ledger_import"
 GENERAL_JOURNAL_TYPES = frozenset({"General Journal", "Journal", "Journal Entry"})
 LEDGER_COLUMNS = ("Type", "Date", "Num", "Name", "Memo", "Split", "Debit", "Credit")
 _DATE_FORMATS = ("%m/%d/%Y", "%m/%d/%y")
-# A file that is plainly day-first (#663): a date whose first part is over
-# 12, and none whose second part is. QuickBooks Desktop in the US writes
-# month/day/year; an export from elsewhere, or a spreadsheet's, can be
-# day/month/year throughout, and read month-first 05/03 posted as May 3.
+# SlowBooks is US-only, and a date is read as QuickBooks Desktop writes one
+# in the United States, month/day/year (#663): a file with any other date is
+# refused, its rows listed, and never read another way. One garbled
+# 13/01/2024 in a US file turned the whole file day/month/year, and every
+# 01/05/2024 in it posted as May 1. These only tell the refusal's sentence
+# that the dates look day first.
 _DAY_FIRST_FORMATS = ("%d/%m/%Y", "%d/%m/%y")
-_DATE_PARTS = re.compile(r"\s*(\d{1,2})/(\d{1,2})/(\d{2}|\d{4})\s*")
 # An amount as QuickBooks writes one: 1,234.56, digits in groups of three
 # before the point. 1.000,00 (a decimal comma) read as 1.00000 before.
 _AMOUNT = re.compile(r"(?:\d{1,3}(?:,\d{3})+|\d*)(?:\.\d*)?")
 _UNREADABLE = (
     "Nothing was imported: {n} could not be read (listed below), and a "
-    "guess would post a wrong date or amount. QuickBooks Desktop writes a "
-    "date as month/day/year (01/31/2024), and a file whose dates are all "
-    "day/month/year is read that way; an amount reads like 1,234.56. Look "
-    "at those rows in a text editor (a spreadsheet can change dates and "
+    "guess would post a wrong date or amount."
+)
+_DAY_FIRST = (
+    " The dates look day first ({first}), and a date is read as "
+    "month/day/year (01/31/2024), the way QuickBooks Desktop writes it in the "
+    "United States. QuickBooks Desktop writes its dates in the order of "
+    "Windows' region setting: in Windows, set the region's format to English "
+    "(United States) (Control Panel > Region), then export the report from "
+    "QuickBooks again and import that."
+)
+_LOOK_AT_THE_ROWS = (
+    " A date reads month/day/year (01/31/2024) and an amount like 1,234.56. "
+    "Look at those rows in a text editor (a spreadsheet can change dates and "
     "amounts as it saves a file), or export the report from QuickBooks "
     "again, and import that."
 )
@@ -167,8 +177,8 @@ def _money(raw: str) -> Decimal:
     return -value if negative else value
 
 
-def _date(raw: str, day_first: bool = False):
-    for fmt in _DAY_FIRST_FORMATS if day_first else _DATE_FORMATS:
+def _date(raw: str, formats=_DATE_FORMATS):
+    for fmt in formats:
         try:
             return datetime.strptime(raw.strip(), fmt).date()
         except ValueError:
@@ -176,37 +186,39 @@ def _date(raw: str, day_first: bool = False):
     raise ValueError(f"unreadable date {raw!r}")
 
 
-def _day_first(rows: list[list[str]], header_at: int, cols: dict) -> str | None:
-    """The first day-first date of a file whose dates are plainly
-    day/month/year (one's first part over 12, none's second), else None:
-    a file that fits month/day/year is read that way, as QuickBooks
-    Desktop in the US writes it."""
-    t, d = cols["Type"], cols["Date"]
-    first = None
-    for row in rows[header_at + 1 :]:
-        if t >= len(row) or d >= len(row) or not row[t].strip():
-            continue
-        m = _DATE_PARTS.fullmatch(row[d])
-        if not m:
-            continue
-        if int(m[2]) > 12:
-            return None
-        if int(m[1]) > 12 and first is None:
-            first = row[d].strip()
-    return first
+def _looks_day_first(raw: str) -> bool:
+    """A date that is no month/day/year and reads as day/month/year
+    (13/01/2024): what an export made under another region's date format
+    holds. It is refused like any other (#663); this only names it."""
+    try:
+        _date(raw, _DAY_FIRST_FORMATS)
+    except ValueError:
+        return False
+    return True
+
+
+def _unreadable_words(n: int, day_first: str | None, look: bool) -> str:
+    """The sentence above the rows that refuse a file (#663): what to do
+    about dates that look day first, and about any other date or amount
+    that could not be read."""
+    words = _UNREADABLE.format(n=f"{n:,} row{'s' if n != 1 else ''}")
+    if day_first:
+        words += _DAY_FIRST.format(first=day_first)
+    if look:
+        words += _LOOK_AT_THE_ROWS
+    return words
 
 
 def parse_ledger(rows: list[list[str]], header_at: int, cols: dict):
     """(lines, errors, notes, cut): each transaction row as {path, type,
     date, num, name, memo, debit, credit, row}, its account the path of the
     headings above it ("Parent:Child"). `errors` refuse the file: rows with
-    no account above them, and rows whose date or amount cannot be read,
-    every one listed (a file plainly day-first is read day-first, and
-    `notes` says so). `cut` says where it looks cut short or edited: the
-    sections whose lines do not add up to QuickBooks' total, the section it
-    ends in (before that section's Total line), the section whose Total
-    line it ends after, with no TOTAL row for the report, and a TOTAL row
-    the lines do not add up to."""
+    no account above them, and rows whose date is not month/day/year or
+    whose amount cannot be read, every one listed. `cut` says where it
+    looks cut short or edited: the sections whose lines do not add up to
+    QuickBooks' total, the section it ends in (before that section's Total
+    line), the section whose Total line it ends after, with no TOTAL row
+    for the report, and a TOTAL row the lines do not add up to."""
     first = cols["Type"]  # the label columns are the ones before Type
     lines: list[dict] = []
     errors: list[str] = []
@@ -217,9 +229,14 @@ def parse_ledger(rows: list[list[str]], header_at: int, cols: dict):
         "no_total": None,
         "grand": None,
     }
-    # rows whose date or amount cannot be read: the file is refused with
-    # them, the one refusal left (a guess would post a wrong date)
+    # rows whose date is not month/day/year, or whose amount cannot be
+    # read: the file is refused with them, the one refusal left (a guess
+    # would post a wrong date or amount), and the sentence above them says
+    # what to do: the first date that looks day first, and whether any
+    # other date or amount is in the list
     unreadable: list[str] = []
+    day_first = None
+    look = False
     # the report's TOTAL row: whether it was there, what it says, and what
     # every line read comes to
     grand_seen = False
@@ -234,13 +251,6 @@ def parse_ledger(rows: list[list[str]], header_at: int, cols: dict):
         i = cols.get(name)
         return row[i].strip() if i is not None and i < len(row) else ""
 
-    day_first = _day_first(rows, header_at, cols)
-    if day_first:
-        notes.append(
-            f"The dates in this file are day/month/year ({day_first}), so every "
-            "date in it was read that way: check a few in the register after "
-            "the import."
-        )
     for n, row in enumerate(rows[header_at + 1 :], start=header_at + 2):
         ttype = cell(row, "Type")
         if not ttype:
@@ -308,14 +318,24 @@ def parse_ledger(rows: list[list[str]], header_at: int, cols: dict):
                 "belongs to above it, so they cannot be posted. " + _HOW
             )
             return [], errors, notes, {}
+        # the cells as they read, never the exception's own words
+        try:
+            day = _date(cell(row, "Date"))
+        except ValueError:
+            raw = cell(row, "Date")
+            if _looks_day_first(raw):
+                day_first = day_first or raw
+            else:
+                look = True
+            unreadable.append(f"Row {n}: the date ({raw!r}) is not month/day/year")
+            continue
         try:
             debit, credit = _money(cell(row, "Debit")), _money(cell(row, "Credit"))
-            day = _date(cell(row, "Date"), day_first=bool(day_first))
         except Exception:
-            # the cells as they read, never the exception's own words
+            look = True
             unreadable.append(
-                f"Row {n}: the date ({cell(row, 'Date')!r}) or an amount "
-                f"({cell(row, 'Debit')!r} / {cell(row, 'Credit')!r}) could not be read"
+                f"Row {n}: an amount ({cell(row, 'Debit')!r} / "
+                f"{cell(row, 'Credit')!r}) could not be read"
             )
             continue
         if debit == 0 and credit == 0:
@@ -339,9 +359,8 @@ def parse_ledger(rows: list[list[str]], header_at: int, cols: dict):
             }
         )
     if unreadable:
-        n = len(unreadable)
-        rows_word = f"{n:,} row{'s' if n != 1 else ''}"
-        return [], [_UNREADABLE.format(n=rows_word)] + unreadable, notes, {}
+        words = _unreadable_words(len(unreadable), day_first, look)
+        return [], [words] + unreadable, notes, {}
     # QuickBooks closes every section with its Total line and the report
     # with its TOTAL row; a file that stops inside a section, or after a
     # section's Total line with no TOTAL row, was cut there (Save as CSV
