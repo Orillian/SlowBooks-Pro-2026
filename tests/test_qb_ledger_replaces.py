@@ -975,3 +975,45 @@ def test_the_cut_file_after_the_complete_one_is_a_duplicate(
     assert _balance(db_session, "Checking") == Decimal("-160.00")
     # nothing was ever off
     assert not db_session.query(Account).filter_by(name="Import Differences").count()
+
+
+def test_a_file_line_with_the_differences_memo_is_one_of_its_lines(
+    client, db_session, seed_accounts
+):
+    """A partial entry reads as the lines its file had: the line left out is
+    the one the import wrote for its difference, last, even when a line of
+    the file has the same memo and amount."""
+    from app.services.qb_ledger_import import DIFFERENCE_MEMO, entry_amounts
+
+    cut = build(
+        [
+            heading("Checking"),
+            row("Check", "01/09/2024", "105", "Acme", "", "-SPLIT-", "", "120.00"),
+            total("Checking", "0.00", "120.00"),
+            heading("Rent or Lease"),
+            row(
+                "Check",
+                "01/09/2024",
+                "105",
+                "Acme",
+                DIFFERENCE_MEMO,
+                "Checking",
+                "60.00",
+                "",
+            ),
+            total("Rent or Lease", "60.00", "0.00"),
+            grand("60.00", "120.00"),
+        ]
+    )
+    _accept(client, cut)
+    (entry,) = _imported(db_session)
+    rent = db_session.query(Account).filter_by(name="Rent or Lease").one()
+    checking = db_session.query(Account).filter_by(name="Checking").one()
+    got = entry_amounts(db_session, {entry.id: entry.source_difference})
+    assert got[entry.id] == {
+        (checking.id, Decimal("-120.00")): 1,
+        (rent.id, Decimal("60.00")): 1,
+    }
+    again = send(client, cut)
+    assert again["journals"] == 0 and _kinds(again) == []
+    assert again["duplicates_skipped"] == 1

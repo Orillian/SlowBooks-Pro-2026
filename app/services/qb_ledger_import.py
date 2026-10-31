@@ -925,8 +925,9 @@ def entry_amounts(db: Session, entries: dict) -> dict:
     line's account and its debit less credit (every line, whatever its
     basis). ``entries`` maps each id to the entry's difference, None for a
     whole entry: a partial entry's line for its difference (the import's
-    memo, the difference the other way round) is left out, so the entry
-    reads as the lines its file had."""
+    memo, the difference the other way round, and the last line it wrote,
+    so a file's line of that memo stays) is left out, and the entry reads
+    as the lines its file had."""
     from app.models.transactions import LEDGER_BASIS_OPTION, READ_ALL, TransactionLine
 
     out = {i: Counter() for i in entries}
@@ -941,7 +942,7 @@ def entry_amounts(db: Session, entries: dict) -> dict:
                 TransactionLine.description,
             )
             .filter(TransactionLine.transaction_id.in_(chunk))
-            .order_by(TransactionLine.id)
+            .order_by(TransactionLine.id.desc())
             .execution_options(**{LEDGER_BASIS_OPTION: READ_ALL})
         ):
             signed = _signed(debit, credit)
