@@ -19,6 +19,8 @@ on what the software does, not on what sprint shipped what.
 
 **Reading a portal or payment link never makes one, and an administrator's API token from before 2.29.0 stops working** (#659, @ContractorKeith). Two GETs used to write when the thing was not there yet: `GET /api/employees/{id}/portal-token` minted the employee's portal link and `GET /api/payments/payment-link/{invoice_id}` made the invoice's payment link. Each is a read now, answering what exists (and a sentence saying how to make one when nothing does); the link is made with `POST` on the same path, which a read-only sign-in or an agent's read tool cannot reach. API tokens have not been made as administrators since 2.29.0, but one made earlier kept working until revoked; it is refused now with a sentence saying to revoke it and make a bookkeeper, accountant or read-only token (with Can make backups ticked for one that makes backups; settings, payroll and HR need an administrator signed in), and Settings, API Tokens flags it. An accountant's sign-in can no longer make a payment link over the API; the page already hid Copy Payment Link from it.
 
+**Also.** Import file on an account with no bank feed offers the feed on that account (it opened on 1000 Checking). A sign-in that cannot see an employee's portal link is told who can, with no button it cannot use. The problem list's arrow keys draw the keyboard's ring after a click into the list on the Mac too.
+
 ### v2.31.1 — Sub-customers, memorized transactions, and stock that comes back out at its own cost
 
 **Each sign-in is offered only what it may do.** The Memorized Transactions
