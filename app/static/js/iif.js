@@ -454,6 +454,7 @@ const IIFPage = {
             list._row = list.querySelector('tbody tr');
             list.addEventListener('keydown', IIFPage._listKeys);
             list.addEventListener('focusin', IIFPage._listFocus);
+            list.addEventListener('pointerdown', () => { delete list.dataset.keys; });
         }
         IIFPage._reviewChanged();
         toast(`Nothing imported yet: ${IIFPage._count(problems.length, 'problem')} to decide below`, 'warning');
@@ -477,7 +478,11 @@ const IIFPage = {
             : move === 'last' ? body.lastElementChild
                 : (move > 0 ? row.nextElementSibling : row.previousElementSibling) || row;
         const box = to && to.querySelector('input.qbr-pick');
-        if (box && box !== from) box.focus();
+        // the keys moved it, so the ring shows even after a click into the
+        // list: WebKit keeps :focus-visible off for a focus() that follows
+        // a pointer (2.31.2 gate, NEW-190); a pointer in the list clears it
+        event.currentTarget.dataset.keys = '1';
+        if (box && box !== from) box.focus({ focusVisible: true });
     },
 
     // A row's own controls, in the Tab order while it is the row in use.

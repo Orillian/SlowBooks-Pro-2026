@@ -1118,6 +1118,41 @@ def test_a_long_problem_list_is_one_stop_for_the_keyboard(browser):
         page.close()
 
 
+def test_the_arrow_keys_draw_the_ring_after_a_click_in_the_list(browser):
+    """2.31.2 gate, NEW-190: on the Mac, a click on a box and then the
+    arrow keys moved the focus with no ring, WebKit keeping :focus-visible
+    off for a focus() after a pointer. A move by the keys marks the list, and
+    the marked list's focused box draws the keyboard's ring; a pointer in
+    the list clears the mark."""
+    sent = []
+    page = _problem_page(browser, sent)
+    try:
+        boxes = page.locator("#qbr [data-kind=unbalanced] tbody input.qbr-pick")
+        boxes.nth(0).click()
+        page.keyboard.press("ArrowDown")
+        state = page.evaluate("""() => {
+                const list = document.querySelector('#qbr [data-kind=unbalanced] .qbr-roving');
+                const box = document.activeElement;
+                const css = getComputedStyle(box);
+                const ring = getComputedStyle(document.documentElement).getPropertyValue('--focus-ring').trim();
+                return {keys: list.dataset.keys || null, style: css.outlineStyle,
+                        width: css.outlineWidth, ring: ring, color: css.outlineColor,
+                        second: box === document.querySelectorAll('#qbr [data-kind=unbalanced] tbody input.qbr-pick')[1]};
+            }""")
+        assert state["second"]
+        assert state["keys"] == "1"
+        assert state["style"] == "solid" and state["width"] == "2px"
+        boxes.nth(2).dispatch_event("pointerdown")
+        assert (
+            page.evaluate(
+                "() => document.querySelector('#qbr [data-kind=unbalanced] .qbr-roving').dataset.keys || null"
+            )
+            is None
+        )
+    finally:
+        page.close()
+
+
 # A file that has whole two transactions the books hold as partial entries
 # (#663): one ticked replaces its entry, one in a reconciliation cannot.
 LEDGER_REPLACES = {

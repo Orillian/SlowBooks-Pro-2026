@@ -2388,6 +2388,14 @@ td > select[class$="-fund"] { min-width: 124px; }
    list of 15,000. These boxes are positioned all along, so focus changes
    nothing about their layout; z-index stays auto, under the sticky header. */
 .qbr-scroll input.qbr-pick { position: relative; }
+/* A box the list's arrow keys moved to draws the keyboard's ring whether or
+   not the browser calls it :focus-visible: after a click into the list,
+   WebKit didn't (2.31.2 gate, NEW-190). The same ring as the rule above. */
+.qbr-roving[data-keys] input.qbr-pick:focus {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 8px var(--focus-halo);
+}
 .qbr-scroll td.qbr-nowrap { white-space: nowrap; }
 .iif-section--wide { grid-column: 1 / -1; }
 .qbr-scroll select { max-width: 220px; }
