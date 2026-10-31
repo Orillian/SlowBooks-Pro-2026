@@ -1101,7 +1101,9 @@ LEDGER_REPLACES = {
                     "num": "101",
                     "name": "Acme",
                     "amount": "60.00",
-                    "difference": "-60.00",
+                    # its rent line alone: 60.00 more in debits, so the
+                    # import credited Import Differences 60.00
+                    "difference": "60.00",
                     "reconciled": True,
                 }
             ],
@@ -1159,7 +1161,7 @@ def test_a_transaction_that_replaces_a_partial_entry_is_listed_beside_it(browser
                 "Smith",
                 "$100.00",
                 "Jan 31, 2024 · $100.00",
-                "$100.00 more in credits",
+                "$100.00 debit",
             ],
             [
                 "Jan 5, 2024",
@@ -1168,15 +1170,19 @@ def test_a_transaction_that_replaces_a_partial_entry_is_listed_beside_it(browser
                 "Acme",
                 "$60.00",
                 "Jan 5, 2024 · $60.00\nin a completed reconciliation",
-                "$60.00 more in credits",
+                "$60.00 credit",
             ],
         ]
         ok = page.get_by_role(
             "checkbox",
             name="Replace the partial entry: General Journal 31 of Jan 31, 2024, "
             "Smith, $100.00 in this file; in the books Jan 31, 2024 · $100.00, "
-            "$100.00 more in credits on Import Differences",
+            "with a $100.00 debit on Import Differences",
         )
+        # the column says what was posted to Import Differences, on which
+        # side: the file's 100.00 more in credits was a debit there
+        header = group.locator("thead th").last.text_content().strip()
+        assert header == "On Import Differences"
         held = group.locator("input.qbr-pick").nth(1)
         assert held.get_attribute("aria-disabled") == "true"
         # the held one takes no tick, by click, by Space or by Select all

@@ -197,9 +197,11 @@ QuickBooks Type, Num and date and every line of the one, its account and
 amount, is among the other's lines, whatever its name (a cut can lose
 it). A later file that has more of a partial entry's transaction lists it
 among the transactions that **replace a partial entry in the books**, the
-partial entry's date, amount and difference beside it; the parts of
-same-day transactions a cut merged into one partial entry are listed
-together. A transaction of the same Type, Num and date that holds none of
+partial entry's date and amount beside it and what it put on Import
+Differences (a debit when the file had more credits, a credit when it had
+more debits); the parts of same-day transactions a cut merged into one
+partial entry are listed together, and the list says when the file's copy
+is still off or is several transactions. A transaction of the same Type, Num and date that holds none of
 its lines (another deposit that day) imports on its own. Ticked, the
 partial entry is voided (its usual reversal, on its own date) and the
 file's copy posts in its place; a copy that still does not balance posts

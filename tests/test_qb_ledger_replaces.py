@@ -531,6 +531,19 @@ def test_partial_then_partial_then_the_whole_transaction(
     "already imported", so the whole file was skipped as a duplicate and
     3950 kept 20.00 for good."""
     _accept(client, ACME_BANK)
+    listed = send(client, ACME_RENT_ONLY)
+    (still,) = _of(listed, "replaces")
+    # a copy still off is not the whole transaction, and the note says what
+    # a tick does with it
+    assert still["text"] == (
+        "Check 101 of 01/05/2024 is in the books as a partial entry of 60.00, "
+        "60.00 of it on 3950 Import Differences; this file has more of it, "
+        "60.00, still 20.00 off."
+    )
+    assert still["still_off"] == 1
+    note = listed["problem_notes"]["replaces"]
+    assert "has them whole" not in note
+    assert "a partial entry again" in note
     copy = _replace(client, ACME_RENT_ONLY)
     assert copy["journals"] == 1 and copy["accepted"] == {
         "unbalanced": 1,
@@ -546,6 +559,8 @@ def test_partial_then_partial_then_the_whole_transaction(
     (group,) = _of(data, "replaces")
     assert [p["difference"] for p in group["partial"]] == ["-20.00"]
     assert (group["amount"], group["off"]) == ("60.00", "0.00")
+    assert group["text"].endswith("this file has the whole transaction, 60.00.")
+    assert "This file has them whole." in data["problem_notes"]["replaces"]
     data = send(client, ACME_WHOLE, {"replaces": [group["key"]]})
     assert data["journals"] == 1 and data["accepted"]["replaced"] == 1
     assert _balance(db_session, "Checking") == Decimal("-60.00")
@@ -630,6 +645,12 @@ def test_two_deposits_merged_by_a_cut_are_replaced_by_both(
     (group,) = _of(data, "replaces")
     assert group["journals"] == 2 and group["names"] == ["Walk-in", "Bank"]
     assert [p["difference"] for p in group["partial"]] == ["5.00"]
+    # two transactions, not "the whole transaction"
+    assert group["text"] == (
+        "Deposit of 03/01/2024 is in the books as a partial entry of 105.00, "
+        "5.00 of it on 3950 Import Differences; this file has it as 2 "
+        "transactions, 105.00 in all, each whole."
+    )
     data = send(client, whole, {"replaces": [group["key"]]})
     assert data["journals"] == 2 and data["accepted"]["replaced"] == 1
     assert _balance(db_session, "Checking") == Decimal("105.00")
@@ -718,8 +739,13 @@ def test_a_journal_a_standing_entry_has_counts_in_the_replacement_but_never_post
     _accept(client, merged, cut_off=True)
     assert _balance(db_session, "Checking") == Decimal("205.00")
     data = send(client, WHOLE_DEPOSITS)
+    assert data["duplicates_skipped"] == 1
     (group,) = _of(data, "replaces")
     assert group["journals"] == 2
+    assert group["text"].endswith(
+        "each whole. One of them is in the books already, whole, and is not "
+        "posted again."
+    )
     data = send(client, WHOLE_DEPOSITS, {"replaces": [group["key"]]})
     assert data["journals"] == 1 and data["duplicates_skipped"] == 1
     assert _balance(db_session, "Checking") == Decimal("105.00")

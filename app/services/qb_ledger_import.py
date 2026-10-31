@@ -1173,9 +1173,33 @@ def _partial_view(db: Session, info: dict) -> dict:
     }
 
 
+def _copy_words(journals: list[dict], amount: Decimal, off: Decimal) -> str:
+    """What a file has of a partial entry's transaction (#663): the whole
+    transaction only when that is what it is. A copy still off has more of
+    it, and the transactions a cut merged into one partial entry are as
+    many in a fuller file."""
+    n = len(journals)
+    still = [j for j in journals if j["off"]]
+    if n == 1:
+        if not still:
+            return f"this file has the whole transaction, {amount:,.2f}."
+        return f"this file has more of it, {amount:,.2f}, still {abs(off):,.2f} off."
+    words = f"this file has it as {n} transactions, {amount:,.2f} in all, "
+    if not still:
+        return words + "each whole."
+    gap = abs(sum((j["off"] for j in still), Decimal("0")))
+    k = len(still)
+    return words + (
+        f"{k} of them still off by {gap:,.2f}."
+        if k > 1
+        else f"one of them still off by {gap:,.2f}."
+    )
+
+
 def _replaces_problem(db: Session, group: dict) -> dict:
-    """A transaction this file has whole (or less cut) that the books hold as
-    a partial entry: the file's copy beside the entry it would replace."""
+    """The journals of this file that hold a partial entry in the books and
+    more of its transaction (_replacements): the file's copy beside the
+    entries it would replace."""
     journals = group["journals"]
     first = journals[0]["lines"][0]
     label = f"{first['type']} {first['num']}".strip()
@@ -1190,13 +1214,27 @@ def _replaces_problem(db: Session, group: dict) -> dict:
     voidable = not any(p["reconciled"] for p in partial)
     held = sum((Decimal(p["amount"]) for p in partial), Decimal("0"))
     plug = sum((Decimal(p["difference"]) for p in partial), Decimal("0"))
-    text = (
-        f"{label} of {first['date']:%m/%d/%Y} is in the books as a partial "
-        f"entry of {held:,.2f}, {abs(plug):,.2f} of it on "
-        f"{_differences_label(db)}; this file has "
-        + ("the whole transaction" if off == 0 else f"it {abs(off):,.2f} off")
-        + f", {amount:,.2f}."
+    entries = (
+        "a partial entry" if len(partial) == 1 else f"{len(partial)} partial entries"
     )
+    text = (
+        f"{label} of {first['date']:%m/%d/%Y} is in the books as {entries} "
+        f"of {held:,.2f}, {abs(plug):,.2f} of it on {_differences_label(db)}; "
+        + _copy_words(journals, amount, off)
+    )
+    known = sum(1 for j in journals if j.get("in_books"))
+    if known and len(journals) == 1:
+        text += (
+            " That transaction is in the books already, whole, and is not "
+            "posted again."
+        )
+    elif known == 1:
+        text += " One of them is in the books already, whole, and is not posted again."
+    elif known:
+        text += (
+            f" {known} of them are in the books already, whole, and are not "
+            "posted again."
+        )
     if not voidable:
         text += (
             " The entry in the books is in a completed reconciliation, so it "
@@ -1214,6 +1252,9 @@ def _replaces_problem(db: Session, group: dict) -> dict:
         "off": f"{off:.2f}",
         "rows": [ln["row"] for j in journals for ln in j["lines"]],
         "journals": len(journals),
+        # how many of the file's journals still do not balance: each posts
+        # as a partial entry again
+        "still_off": sum(1 for j in journals if j["off"]),
         "partial": partial,
         "voidable": voidable,
         "text": text,
@@ -1335,13 +1376,22 @@ def _problem_notes(db: Session, problems: list[dict]) -> dict:
             "left out."
         )
     if "replaces" in kinds:
+        label = _differences_label(db)
+        off = any(p["still_off"] for p in problems if p["kind"] == "replaces")
         notes["replaces"] = (
             "An earlier file had these transactions in part, and each was "
-            f"imported with its difference on {_differences_label(db)}. This file "
-            "has them whole. Ticked, the partial entry is voided (its usual "
-            "reversal, on its own date) and this file's posts in its place. "
-            "Unticked, the entry in the books stays as it is and this file's is "
-            "left out."
+            f"imported with its difference on {label}. "
+            + (
+                "This file has more of each, not all of it whole: a "
+                f"transaction still off posts with its own difference on {label}, "
+                "a partial entry again, which a later file that has it whole "
+                "replaces in turn. "
+                if off
+                else "This file has them whole. "
+            )
+            + "Ticked, the partial entry is voided (its usual reversal, on its "
+            "own date) and this file's posts in its place. Unticked, the entry "
+            "in the books stays as it is and this file's is left out."
         )
     if "unbalanced" in kinds:
         notes["unbalanced"] = (
