@@ -574,7 +574,6 @@ def reverse_journal_entry(
     *,
     acting: str | None = None,
     source_type: str = "manual_void",
-    source_ref: str | None = None,
 ) -> Transaction:
     """A journal entry's void: its mirror image on its own date (every line,
     whatever its basis), the description and reference it had, an
@@ -583,8 +582,7 @@ def reverse_journal_entry(
     one in a closed period, as Void is. The caller commits.
 
     The journal's Void, and the ledger import replacing a partial entry
-    with the whole transaction from a later file (#663, which marks the
-    reversal with ``source_ref``)."""
+    with more of its transaction from a later file (#663)."""
     assert_not_reconciled(txn)
     check_closing_date(db, txn.date)
     void_txn = create_journal_entry(
@@ -600,7 +598,6 @@ def reverse_journal_entry(
         job_id=txn.job_id,
         is_adjusting=bool(txn.is_adjusting),
         posted_by=acting,
-        source_ref=source_ref,
     )
     release_statement_links(db, txn)
     return void_txn

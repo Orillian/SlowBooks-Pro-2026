@@ -191,17 +191,27 @@ result says how many were left out and why.
 
 A transaction you left out comes in from a corrected file later, and what
 posted whole is skipped then. One you accepted with its difference is a
-**partial entry**, and a later file never posts it a second time: a
-transaction of the same QuickBooks Type, Num and date (whatever its name,
-which a cut can change) is listed among the transactions that **replace a
-partial entry in the books**, the partial entry's date, amount and
-difference beside it. Ticked, the partial entry is voided (its usual
-reversal, on its own date) and the file's copy posts in its place;
-unticked, both stay as they are and the file's copy is left out. Nothing
-is ticked to start with. A partial entry in a completed reconciliation is
-not replaced until that reconciliation is undone, and one you void
-yourself no longer counts as imported, so the next file brings that
-transaction in. The same cut file uploaded again posts nothing.
+**partial entry**, and a later file never posts it a second time. A
+transaction in a file is the one in the books when the two have the same
+QuickBooks Type, Num and date and every line of the one, its account and
+amount, is among the other's lines, whatever its name (a cut can lose
+it). A later file that has more of a partial entry's transaction lists it
+among the transactions that **replace a partial entry in the books**, the
+partial entry's date, amount and difference beside it; the parts of
+same-day transactions a cut merged into one partial entry are listed
+together. A transaction of the same Type, Num and date that holds none of
+its lines (another deposit that day) imports on its own. Ticked, the
+partial entry is voided (its usual reversal, on its own date) and the
+file's copy posts in its place; a copy that still does not balance posts
+as a partial entry again, and a later file that has it whole replaces
+that in turn. Unticked, both stay as they are and the file's copy is left
+out. Nothing is ticked to start with. A cut file whose transactions the
+books already hold (the same cut file again, or the old one after the
+corrected file) posts nothing: they are counted with the duplicates. A
+partial entry in a completed reconciliation is not replaced until that
+reconciliation is undone, and one that was voided, by you or by a
+replacement, no longer counts as imported, so the next file that has that
+transaction brings it in.
 
 In a bank or card register each entry reads as one typed there does:
 QuickBooks' **Name** is the payee, its **Num** the Ref #, each line's

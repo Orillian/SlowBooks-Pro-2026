@@ -27,9 +27,14 @@
 # out imports with what was accepted (an accepted transaction's difference
 # on Import Differences, an accepted account made with the type chosen),
 # and the rest is left out and counted. A second upload posts nothing twice.
-# An accepted transaction is a partial entry: a later file's copy of it (the
-# same Type, Num and Date, whatever its name) is listed as replacing it, and
-# ticked, the partial entry is voided and the copy posts in its place.
+# An accepted transaction is a partial entry. One rule (holds) says that a
+# journal of a later file and an entry in the books are one QuickBooks
+# transaction: the same Type, Num and Date, and every line of the one, its
+# account and amount, among the other's, whatever names either file kept. A
+# later file's journals that hold a partial entry and more are listed as
+# replacing it, and ticked, the partial entry is voided and they post in its
+# place; a cut copy that an entry in the books holds is skipped as a
+# duplicate.
 #
 # Built against a real company's report (a year of a small practice's books:
 # about 5,700 rows, every transaction balanced, the section totals matched);
@@ -42,7 +47,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections import OrderedDict, defaultdict
+from collections import Counter, OrderedDict, defaultdict
 from datetime import datetime
 from decimal import Decimal
 
@@ -874,19 +879,85 @@ def _cents(value) -> Decimal:
 
 def _ttd(kind, num, day) -> tuple:
     """A transaction's QuickBooks Type, Num and Date as an entry stores them
-    (source_kind, reference, date): what a later file's copy of a partial
-    entry is matched by, whatever names either file kept (#663). A cut or
-    filtered file can lose the line that carried the only other name, so
-    the import key, which holds the journal's one name, can differ."""
+    (source_kind, reference, date): with its lines (holds), what tells that
+    a journal of a file and an entry are one QuickBooks transaction,
+    whatever names either file kept (#663). A cut or filtered file can lose
+    the line that carried the only other name, so the import key, which
+    holds the journal's one name, can differ."""
     return ((kind or "")[:50], (num or "")[:100] or None, day)
 
 
-# The reversal of a partial entry a later file replaced with the whole
-# transaction (#663) says so in its source_ref: that entry's key stays
-# taken, so an older copy of the cut file brings nothing back. A partial
-# entry voided by hand frees its key, and a corrected file brings the
-# transaction in.
-REPLACED_REF = "replaced by a later QuickBooks file"
+def holds(outer: dict, inner: dict) -> bool:
+    """Whether ``outer`` holds all of ``inner``: the one rule that says a
+    journal of a file and an entry in the books (or two of either) are the
+    same QuickBooks transaction, or a part of it (#663). The two have the
+    same QuickBooks Type, Num and Date (``ttd``), and every line of
+    ``inner``, its account and its debit less credit, is among the lines of
+    ``outer`` (``amounts``), counted as a multiset: two lines of 50.00 on
+    Checking need two there. A partial entry's own line on Import
+    Differences is never one of its lines (entry_amounts).
+
+    Type, Num and Date alone took a transaction of another name on the same
+    day for the one in the books (a 5.00 interest deposit voided a 100.00
+    walk-in's partial entry), and the import key (Type, Num, Date and the
+    one name) missed the one a cut had lost the name of."""
+    return outer["ttd"] == inner["ttd"] and not inner["amounts"] - outer["amounts"]
+
+
+def _signed(debit, credit) -> Decimal:
+    return _cents(debit) - _cents(credit)
+
+
+def journal_amounts(journal: list[dict], accounts: dict) -> Counter:
+    """A file's journal as holds reads it: each line's account and its debit
+    less credit. A line on an account the chart lacks is one no entry in
+    the books has."""
+    out: Counter = Counter()
+    for ln in journal:
+        acct = accounts.get(ln["path"])
+        where = acct.id if acct is not None else ("not in the chart", ln["path"])
+        out[(where, _signed(ln["debit"], ln["credit"]))] += 1
+    return out
+
+
+def entry_amounts(db: Session, entries: dict) -> dict:
+    """{id: Counter}: entries the import posted, as holds reads them, each
+    line's account and its debit less credit (every line, whatever its
+    basis). ``entries`` maps each id to the entry's difference, None for a
+    whole entry: a partial entry's line for its difference (the import's
+    memo, the difference the other way round) is left out, so the entry
+    reads as the lines its file had."""
+    from app.models.transactions import LEDGER_BASIS_OPTION, READ_ALL, TransactionLine
+
+    out = {i: Counter() for i in entries}
+    plugged = set()
+    for chunk in _chunks(entries):
+        for tid, acct, debit, credit, memo in (
+            db.query(
+                TransactionLine.transaction_id,
+                TransactionLine.account_id,
+                TransactionLine.debit,
+                TransactionLine.credit,
+                TransactionLine.description,
+            )
+            .filter(TransactionLine.transaction_id.in_(chunk))
+            .order_by(TransactionLine.id)
+            .execution_options(**{LEDGER_BASIS_OPTION: READ_ALL})
+        ):
+            signed = _signed(debit, credit)
+            difference = entries[tid]
+            if (
+                difference is not None
+                and tid not in plugged
+                and memo == DIFFERENCE_MEMO
+                and signed == -_cents(difference)
+            ):
+                plugged.add(tid)
+                continue
+            out[tid][(acct, signed)] += 1
+    return out
+
+
 _IN_CHUNK = 500  # ids per IN (...), under SQLite's parameter limit
 
 
@@ -896,16 +967,25 @@ def _chunks(items):
         yield items[i : i + _IN_CHUNK]
 
 
-def _entries_here(db: Session):
-    """(have, partial_by_key, partial_by_ttd): the keys of the entries this
-    import posted that a file brings nothing more of, and the partial
-    entries that stand (posted with a difference on Import Differences, and
-    not voided), by key and by Type, Num and Date.
+def _entries_here(db: Session, keys: set, ttds: set) -> dict:
+    """What the books hold of this import's entries, for a file with these
+    import keys and Types, Nums and Dates (#663):
 
-    A complete entry keeps its key, voided or not: a second upload posts
-    nothing twice. A partial entry voided by hand frees its key, so the
-    corrected file brings the transaction in; one the import replaced keeps
-    it taken."""
+    - ``have``: every whole entry's key, voided or not: a second upload
+      posts nothing twice, and a whole entry voided by hand stays voided;
+    - ``standing``: those of ``keys`` that a whole entry that stands holds;
+    - ``whole`` and ``partial``: the entries that stand with one of
+      ``ttds``, whole and partial (posted with a difference on Import
+      Differences), by Type, Num and Date, each {id, key, ttd, difference,
+      amounts}, oldest first.
+
+    A partial entry's key is never in ``have``. Voided, by hand or by a
+    later file that replaced it, it holds nothing in the books, and a file
+    that holds its transaction brings it in; standing, what a file holds of
+    it is told by holds. A replaced one's key used to stay in ``have`` (its
+    reversal said so), so that the old cut file brought nothing back: the
+    entry that replaced it holds that file's journal now, and the key had
+    hidden the next file's whole transaction of the same name."""
     from app.services.voids import TRANSACTION_KEYED_VOIDS
 
     rows = (
@@ -918,31 +998,140 @@ def _entries_here(db: Session):
             Transaction.source_difference,
         )
         .filter(Transaction.source_type == SOURCE_TYPE)
+        .order_by(Transaction.id)
         .all()
     )
-    reversed_by = {}
-    for chunk in _chunks(r.id for r in rows if r.source_difference is not None):
-        for sid, ref in db.query(Transaction.source_id, Transaction.source_ref).filter(
-            Transaction.source_type.in_(TRANSACTION_KEYED_VOIDS),
-            Transaction.source_id.in_(chunk),
-        ):
-            reversed_by[sid] = ref
-    have, by_key, by_ttd = set(), {}, defaultdict(list)
+    have = set()
+    near = []  # the entries this file's journals can be matched to
     for r in rows:
         # its source_ref, else (an entry the 2.31.2 upgrade could not read
         # back) the reference that held it before
         key = r.source_ref or r.reference
+        ttd = _ttd(r.source_kind, r.reference, r.date)
         if r.source_difference is None:
             have.add(key)
+        if ttd in ttds or (r.source_difference is None and key in keys):
+            near.append((r, key, ttd))
+    voided = set()
+    for chunk in _chunks(r.id for r, _, _ in near):
+        voided.update(
+            sid
+            for (sid,) in db.query(Transaction.source_id).filter(
+                Transaction.source_type.in_(TRANSACTION_KEYED_VOIDS),
+                Transaction.source_id.in_(chunk),
+            )
+        )
+    stand = [(r, key, ttd) for r, key, ttd in near if r.id not in voided]
+    amounts = entry_amounts(
+        db, {r.id: r.source_difference for r, _, ttd in stand if ttd in ttds}
+    )
+    out = {
+        "have": have,
+        "standing": set(),
+        "whole": defaultdict(list),
+        "partial": defaultdict(list),
+    }
+    for r, key, ttd in stand:
+        whole = r.source_difference is None
+        if whole and key in keys:
+            out["standing"].add(key)
+        if ttd in ttds:
+            out["whole" if whole else "partial"][ttd].append(
+                {
+                    "id": r.id,
+                    "key": key,
+                    "ttd": ttd,
+                    "difference": None if whole else _cents(r.source_difference),
+                    "amounts": amounts[r.id],
+                }
+            )
+    return out
+
+
+def _cover(partial: dict, pool: list[dict]) -> list[dict] | None:
+    """The journals of a file that replace a partial entry (#663): the first
+    that holds it and has more of it, else the first ones in file order
+    that hold it together, each with a line of it the ones before lack. A
+    cut file can merge the parts of several same-day transactions into one
+    partial entry, which a fuller file has as a journal each; those replace
+    it even when together they hold no more than it does, or the whole ones
+    among them would post a second time. None when one journal of the file
+    holds no more of it than the books (the same cut file again) and the
+    file's journals do not hold it together (less of it)."""
+    one = next(
+        (j for j in pool if holds(j, partial) and j["amounts"] != partial["amounts"]),
+        None,
+    )
+    if one is not None:
+        return [one]
+    left = Counter(partial["amounts"])
+    chosen = []
+    for j in pool:
+        common = j["amounts"] & left
+        if common:
+            chosen.append(j)
+            left -= common
+            if not left:
+                break
+    together = sum((j["amounts"] for j in chosen), Counter())
+    if len(chosen) < 2 or not holds(
+        {"ttd": partial["ttd"], "amounts": together}, partial
+    ):
+        return None
+    return chosen
+
+
+def _replacements(txns: list[dict], partials: dict, closing) -> list[dict]:
+    """The partial entries in the books that this file replaces (#663), as
+    groups: {key, journals, partials}. A partial entry is replaced by the
+    journals of the file that hold it (_cover), of its own Type, Num and
+    Date: one of another name that day, holding none of its lines, is no
+    copy of it and imports on its own. A journal one partial entry needs
+    and another does too makes them one group. A journal here already can
+    be in one: its lines count, and it posts unless a whole entry that
+    stands has it (a key that only a voided entry holds is no reason to
+    leave a replacement's part out). Nothing in a closed period is
+    replaced: its void would be refused."""
+    pools = defaultdict(list)
+    for t in txns:
+        if t["state"] in (None, "here"):
+            pools[t["ttd"]].append(t)
+    groups = []
+    for ttd, standing in partials.items():
+        pool = pools.get(ttd)
+        if not pool or (closing is not None and ttd[2] <= closing):
             continue
-        if r.id in reversed_by:
-            if reversed_by[r.id] == REPLACED_REF:
-                have.add(key)
-            continue
-        info = {"id": r.id, "key": key, "difference": _cents(r.source_difference)}
-        by_key.setdefault(key, info)
-        by_ttd[_ttd(r.source_kind, r.reference, r.date)].append(info)
-    return have, by_key, by_ttd
+        found = []  # (partial entries, journals), one per partial entry
+        for p in standing:
+            cover = _cover(p, pool)
+            if cover is None:
+                continue
+            ids = {id(j) for j in cover}
+            ps = [p]
+            for other in [f for f in found if ids & {id(j) for j in f[1]}]:
+                found.remove(other)
+                ps = other[0] + ps
+                ids |= {id(j) for j in other[1]}
+            found.append((ps, [j for j in pool if id(j) in ids]))
+        found.sort(key=lambda f: pool.index(f[1][0]))
+        for n, (ps, js) in enumerate(found, start=1):
+            first = js[0]["lines"][0]
+            key = f"{first['type']} {first['num']}".strip()
+            key += f" · {first['date']:%Y-%m-%d}" + (f" #{n}" if n > 1 else "")
+            groups.append(
+                {
+                    "key": key,
+                    "journals": js,
+                    "partials": sorted(ps, key=lambda p: p["id"]),
+                }
+            )
+    groups.sort(
+        key=lambda g: (
+            g["journals"][0]["lines"][0]["date"],
+            g["journals"][0]["lines"][0]["row"],
+        )
+    )
+    return groups
 
 
 def _amount(journal: list[dict]) -> Decimal:
@@ -1092,7 +1281,7 @@ def _problems(
     if closed:
         out.append(_closed_problem(closed, closing))
     for target in OrderedDict.fromkeys(missing.values()):
-        n = sum(1 for t in candidates if target in t["needs"])
+        n = sum(1 for t in candidates if target in t["needs"] and not t.get("in_books"))
         if not n:
             continue
         touching = f"{n} transaction{'s' if n != 1 else ''}"
@@ -1108,7 +1297,7 @@ def _problems(
                 "text": f"{target} is not in the chart ({touching})",
             }
         )
-    out += [_replaces_problem(db, g) for g in groups.values()]
+    out += [_replaces_problem(db, g) for g in groups]
     out += [
         _unbalanced_problem(t)
         for t in candidates
@@ -1231,7 +1420,6 @@ def import_ledger_report(
             missing[path] = _other_section_target(path) or path
         accounts[path] = acct
     journals, unbalanced = group_transactions(lines)
-    have, partial_by_key, partial_by_ttd = _entries_here(db)
     # the balanced ones are keyed first, as before #663, so their keys are
     # the ones an earlier upload of them made whatever else this file holds
     seen: dict = {}
@@ -1242,58 +1430,48 @@ def import_ledger_report(
         {"lines": g, "key": _import_key(g, seen), "balanced": False} for g in unbalanced
     ]
     txns.sort(key=lambda t: (t["lines"][0]["date"], t["lines"][0]["row"]))
-    # where each transaction stands: here already, a partial entry's
-    # replacement, or to post
-    claimed = set()  # partial entries this file has as they are (a copy)
     for t in txns:
         first = t["lines"][0]
         t["needs"] = {missing[ln["path"]] for ln in t["lines"] if ln["path"] in missing}
         t["off"] = _off(t["lines"])
         t["ttd"] = _ttd(first["type"], first["num"], first["date"])
+        t["amounts"] = journal_amounts(t["lines"], accounts)
         t["state"] = None
-        partial = partial_by_key.get(t["key"])
-        if t["key"] in have:
-            t["state"] = "here"
-        elif (
-            partial is not None
-            and not t["balanced"]
-            and _cents(t["off"]) == partial["difference"]
-        ):
-            # the same cut file again: its entry is the one in the books
-            t["state"] = "here"
-            claimed.add(partial["id"])
+    books = _entries_here(db, {t["key"] for t in txns}, {t["ttd"] for t in txns})
     from app.services.closing_date import get_closing_date
 
     # a journal on or before the closing date is left out, and the list says
     # so: it was the second call's 403, after the person had answered
     closing = get_closing_date(db)
-    groups: OrderedDict = OrderedDict()
+    # where each transaction stands (#663): here already, in a closed
+    # period, replacing a partial entry, or to post
     for t in txns:
-        if t["state"]:
-            continue
-        if closing is not None and t["lines"][0]["date"] <= closing:
+        if t["key"] in books["standing"] or (
+            not t["balanced"]
+            and any(holds(e, t) for e in books["whole"].get(t["ttd"], ()))
+        ):
+            # a whole entry that stands has it: its key's, or one that holds
+            # what is left of it in a cut file (the corrected file came in
+            # first, or replaced the partial entry that file made)
+            t["state"], t["in_books"] = "here", True
+        elif t["key"] in books["have"]:
+            # its whole entry was voided, and stays so, unless a partial
+            # entry's replacement needs it
+            t["state"] = "here"
+        elif closing is not None and t["lines"][0]["date"] <= closing:
             t["state"] = "closed"
-            continue
-        standing = [
-            p for p in partial_by_ttd.get(t["ttd"], ()) if p["id"] not in claimed
-        ]
-        if not standing:
-            t["state"] = "pending"
-            continue
-        # the books hold this transaction as a partial entry, whatever its
-        # name there: the file's copy replaces it, or nothing
-        t["state"] = "replaces"
-        first = t["lines"][0]
-        group = groups.setdefault(
-            t["ttd"],
-            {
-                "key": f"{first['type']} {first['num']}".strip()
-                + f" · {first['date']:%Y-%m-%d}",
-                "journals": [],
-                "partials": standing,
-            },
-        )
-        group["journals"].append(t)
+    groups = _replacements(txns, books["partial"], closing)
+    for group in groups:
+        for t in group["journals"]:
+            t["state"], t["group"] = "replaces", group
+    for t in txns:
+        if t["state"] is None:
+            # a partial entry that stands holds what this file has of it: the
+            # same cut file again, or one cut shorter
+            inside = not t["balanced"] and any(
+                holds(p, t) for p in books["partial"].get(t["ttd"], ())
+            )
+            t["state"] = "here" if inside else "pending"
     candidates = [t for t in txns if t["state"] in ("pending", "replaces")]
     closed = [t for t in txns if t["state"] == "closed"]
     problems = _problems(db, candidates, cut, missing, groups, closed, closing)
@@ -1302,7 +1480,9 @@ def import_ledger_report(
     if closed and not candidates:
         notice = _closed_problem(closed, closing)
         result["warnings"].append(f"{notice['text']} {_closed_note(closing)}")
-    here = sum(1 for t in txns if t["state"] == "here")
+    # skipped whatever the answers: what is here, and the journals of a
+    # replacement that a whole entry that stands has already
+    here = sum(1 for t in txns if t["state"] == "here" or t.get("in_books"))
     if problems and answers is None:
         # nothing posts before the person has seen them
         result["duplicates_skipped"] = here
@@ -1402,9 +1582,8 @@ def import_ledger_report(
             source_kind=first["type"][:50],
         )
         if off:
-            # a partial entry: a later file that has it whole replaces it
+            # a partial entry: a later file that has more of it replaces it
             txn.source_difference = off
-        have.add(t["key"])
         result["journals"] += 1
 
     from app.routes.journal import reverse_journal_entry
@@ -1418,11 +1597,15 @@ def import_ledger_report(
             left_out["closed_period"] += 1
             continue
         if state == "replaces":
-            group = groups[t["ttd"]]
+            group = t["group"]
             if group.get("done"):
                 continue
             group["done"] = True
-            journals = group["journals"]
+            # what a whole entry that stands has already is never posted
+            # again, whatever the answer; the rest posts with the void
+            here_too = [j for j in group["journals"] if j.get("in_books")]
+            journals = [j for j in group["journals"] if not j.get("in_books")]
+            result["duplicates_skipped"] += len(here_too)
             if group["key"] not in answers["replaces"]:
                 left_out["replaces"] += len(journals)
                 continue
@@ -1440,9 +1623,7 @@ def import_ledger_report(
                 left_out["missing_account"] += len(journals)
                 continue
             for entry in standing:
-                reverse_journal_entry(
-                    db, entry, acting=posted_by, source_ref=REPLACED_REF
-                )
+                reverse_journal_entry(db, entry, acting=posted_by)
                 replaced += 1
             for j in journals:
                 post(j)
