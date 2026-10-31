@@ -156,7 +156,7 @@ def pl_detail_lines(
                 "line_id": tl.id,
                 "transaction_id": txn.id,
                 "date": txn.date.isoformat(),
-                "type": source_word(txn.source_type, words),
+                "type": source_word(txn.source_type, words, txn.source_kind),
                 "source_type": txn.source_type or "journal",
                 "num": refs.get(txn.id, ""),
                 "name": payees.get(txn.id, ""),

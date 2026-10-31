@@ -1065,7 +1065,7 @@ const BankingPage = {
                     <td>${escapeHtml(e.payee || '')}</td>
                     <td>${BankingPage._memoCell(e)}</td>
                     <td>${escapeHtml(e.reference || '')}</td>
-                    <td style="font-size:10px; color:var(--gray-500);">${escapeHtml(sourceWord(e.source_type))}</td>
+                    <td style="font-size:10px; color:var(--gray-500);">${escapeHtml(sourceWord(e.source_type, e.source_kind))}</td>
                     <td class="amount">${e.payment > 0 ? formatCurrency(e.payment) : ''}</td>
                     <td class="amount">${e.deposit > 0 ? formatCurrency(e.deposit) : ''}</td>
                     <td class="amount" style="font-weight:700;">${formatCurrency(e.balance)}</td>
@@ -1401,7 +1401,7 @@ const BankingPage = {
                 <td>${formatDate(c.date)} <span style="font-size:10px; color:var(--gray-400);">${c.days_off ? c.days_off + 'd off' : 'same day'}</span></td>
                 <td>${escapeHtml(c.payee || c.description || '')}</td>
                 <td>${escapeHtml(c.reference || '')}</td>
-                <td style="font-size:10px;">${escapeHtml(sourceWord(c.source_type))}</td>
+                <td style="font-size:10px;">${escapeHtml(sourceWord(c.source_type, c.source_kind))}</td>
                 <td><button class="btn btn-sm btn-primary" onclick="BankingPage.matchLine(${lineId}, ${c.line_id}, ${accountId})">Match</button></td>
             </tr>`).join('');
             openModal('Match to a posting', rows

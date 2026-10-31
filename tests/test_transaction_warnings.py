@@ -329,3 +329,76 @@ def test_settings_draws_named_boxes_saved_as_true_or_false():
         assert f"SettingsPage._warnBox(s, '{key}'" in src
     assert 'input[type="checkbox"][data-bool][name]' in src
     assert "SettingsPage._warnDays(s, 'warn_date_past_days'" in src
+
+
+def _imported(db, accounts, num, name, kind=None, key=None):
+    """An entry QuickBooks Desktop's ledger import posted, money out of
+    Checking, with QuickBooks' Num as its reference and its Type kept."""
+    from datetime import date
+    from decimal import Decimal
+
+    from app.services.accounting import create_journal_entry
+
+    create_journal_entry(
+        db,
+        date(2026, 9, 2),
+        name,
+        [
+            {
+                "account_id": accounts["6100"].id,
+                "debit": Decimal("12.50"),
+                "credit": Decimal("0"),
+            },
+            {
+                "account_id": accounts["1000"].id,
+                "debit": Decimal("0"),
+                "credit": Decimal("12.50"),
+            },
+        ],
+        source_type="qb_ledger_import",
+        reference=num,
+        source_kind=kind,
+        source_ref=key,
+    )
+    db.commit()
+
+
+@pytest.mark.parametrize(
+    "kind, key",
+    [
+        ("Check", "Check 5001 · 2026-09-02 · Gas Co"),
+        ("Bill Pmt -Check", "Bill Pmt -Check 5001 · 2026-09-02 · Gas Co"),
+        ("Paycheque", "Paycheque 5001 · 2026-09-02 · Gas Co"),
+        # no Type stored: the key says it
+        (None, "Check 5001 · 2026-09-02 · Gas Co"),
+    ],
+)
+def test_an_imported_check_is_asked_about(client, db_session, seed_accounts, kind, key):
+    """A QuickBooks Desktop ledger import's check keeps its number a used
+    one (#663), though the next check number does not follow it."""
+    _imported(db_session, seed_accounts, "5001", "Gas Co", kind, key)
+    _turn_on(client)
+    r = _entry(client, seed_accounts, "5001")
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["uses"] == [
+        {"date": "2026-09-02", "payee": "Gas Co", "amount": "12.50"}
+    ]
+    assert _entry(client, seed_accounts, "5001", query=OVERRIDE).status_code == 201
+
+
+@pytest.mark.parametrize(
+    "kind, key",
+    [
+        ("General Journal", "General Journal 31 · 2026-09-02"),
+        ("Transfer", "Transfer 31 · 2026-09-02"),
+        (None, "General Journal 31 · 2026-09-02"),
+    ],
+)
+def test_an_imported_journal_entrys_number_is_no_check(
+    client, db_session, seed_accounts, kind, key
+):
+    """A payroll journal entry QuickBooks numbered 31, or an EFT's
+    confirmation number, is not check 31 (#663)."""
+    _imported(db_session, seed_accounts, "31", "", kind, key)
+    _turn_on(client)
+    assert _entry(client, seed_accounts, "31").status_code == 201

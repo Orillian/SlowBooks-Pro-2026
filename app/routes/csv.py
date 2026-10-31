@@ -200,15 +200,42 @@ async def csv_import_qb_report(
     file: UploadFile = File(...),
     adjusting_only: bool = Form(False),
     outflow_positive: bool = Form(False),
+    answers: UploadFile | str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     """Import a QuickBooks Desktop report CSV — the documented fallback
     for Desktop, which can't export transactions to IIF. Auto-detects the
     report by its columns: Transaction Detail filtered to Sales Receipt,
-    Deposit Detail, or Check Detail."""
-    from app.services.qb_report_import import import_qb_report
+    Deposit Detail, or Check Detail.
 
+    A Transaction Detail by Account file with problems posts nothing and
+    answers with them and the file's sha256 (#663); ``answers``, a JSON
+    object, is the person's answers to them, sent with the same file again
+    and carrying that sha256: a text field, or a part of its own, as the
+    page sends it (a text field holds 1 MB, and thousands of ticked
+    transactions can be more). Answers made for another file are refused."""
+    from app.services.qb_ledger_import import (
+        check_answers_file,
+        file_sha256,
+        read_answers,
+    )
+    from app.services.qb_report_import import import_qb_report
+    from app.services.safe_errors import DataProblem
+
+    if answers is not None and not isinstance(answers, str):
+        answers = (await read_limited(answers, label="The answers")).decode(
+            "utf-8", "replace"
+        )
+    try:
+        answered = read_answers(answers)
+    except DataProblem as e:
+        raise HTTPException(status_code=400, detail=e.user_text)
     raw = await read_limited(file, label="CSV file")
+    sha = file_sha256(raw)
+    try:
+        check_answers_file(answered, sha)
+    except DataProblem as e:
+        raise HTTPException(status_code=400, detail=e.user_text)
     if (file.filename or "").lower().endswith(".xlsx"):
         # a report saved as Excel (the timesheet reports usually are, #323):
         # its first sheet, cells as they read
@@ -222,10 +249,18 @@ async def csv_import_qb_report(
     # is marked adjusting in the sign-in's name
     # ``outflow_positive`` (#328): a categorized bank sheet whose amounts
     # read money out as positive
-    return import_qb_report(
-        db,
-        content,
-        adjusting_only=adjusting_only,
-        posted_by=db.info.get("acting_username"),
-        outflow_positive=outflow_positive,
-    )
+    try:
+        return import_qb_report(
+            db,
+            content,
+            adjusting_only=adjusting_only,
+            posted_by=db.info.get("acting_username"),
+            outflow_positive=outflow_positive,
+            answers=answered,
+            file_sha=sha,
+        )
+    except DataProblem as e:
+        # an answer the chart's rules refuse (an account made with a type
+        # its parent does not take, #663): nothing is kept
+        db.rollback()
+        raise HTTPException(status_code=400, detail=e.user_text)

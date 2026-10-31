@@ -2367,6 +2367,33 @@ td > select[class$="-fund"] { min-width: 124px; }
     color: var(--text-secondary);
 }
 
+/* A ledger file's problems, before anything is imported (#663): a group per
+   kind, each list scrolling in its own box with its header in view, so a
+   file with thousands stays one page. The theme's tokens throughout. */
+.qbr-lead { margin: 0 0 8px; font-size: 12px; color: var(--text-primary); }
+.qbr-save { margin-bottom: 4px; }
+.qbr-group { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--panel-border); }
+.qbr-group h5 { margin: 0 0 4px; font-size: 12px; font-weight: 700; color: var(--text-primary); }
+.qbr-note { margin: 0 0 6px; color: var(--text-secondary); }
+.qbr-details { margin: 0 0 6px 18px; font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary); }
+.qbr-tick { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; color: var(--text-primary); }
+.qbr-bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
+.qbr-count { color: var(--text-secondary); }
+.qbr-scroll { max-height: 280px; overflow: auto; scroll-padding-top: 28px; border: 1px solid var(--panel-border); background: var(--panel-bg); }
+.qbr-scroll thead th { position: sticky; top: 0; z-index: 1; }
+.qbr-scroll td.qbr-pick-cell { width: 28px; }
+/* The focus ring's rule positions what it outlines (position: relative, so
+   the halo paints over the next row). A box that went from static to
+   relative as it took focus relaid the whole table out: 130 ms a key in a
+   list of 15,000. These boxes are positioned all along, so focus changes
+   nothing about their layout; z-index stays auto, under the sticky header. */
+.qbr-scroll input.qbr-pick { position: relative; }
+.qbr-scroll td.qbr-nowrap { white-space: nowrap; }
+.iif-section--wide { grid-column: 1 / -1; }
+.qbr-scroll select { max-width: 220px; }
+.qbr-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+.qbr-hint { color: var(--text-secondary); }
+
 /* ===========================================================================
    Phase 9: Analytics page (#/analytics)
    Inline SPA page matching the QB2003 blue skin with light/dark support.

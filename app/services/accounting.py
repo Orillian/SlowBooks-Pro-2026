@@ -323,6 +323,8 @@ def create_journal_entry(
     existing_transaction: Transaction = None,
     is_adjusting: bool = False,
     posted_by: str = None,
+    source_ref: str = None,
+    source_kind: str = None,
 ) -> Transaction:
     """Create a balanced journal entry.
 
@@ -429,7 +431,9 @@ def create_journal_entry(
     )
     txn = existing_transaction
     if txn is None:
-        txn = Transaction(**header)
+        # an import's key for the row it came from (#663) and the row's own
+        # type there, set once
+        txn = Transaction(**header, source_ref=source_ref, source_kind=source_kind)
         db.add(txn)
     else:
         for key, value in header.items():

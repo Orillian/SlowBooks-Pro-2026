@@ -7,8 +7,9 @@ a heading row per account, sub-accounts one column in, each transaction in
 every account it touches with the other side in Split, and QuickBooks' own
 Total row under each section. Import from Report CSV refused it as an
 unrecognized layout. It now posts each transaction as one balanced journal
-entry, after checking the whole file first, and refuses a file that fails
-whole.
+entry, after checking the whole file first. A file that fails posts nothing
+on its first upload and lists its problems for the person to accept or
+leave out (#663, tests/test_qb_ledger_problems.py).
 
 The fixture is invented books in the layout of a real export the importer
 was built against (a small practice's year, every account matching the
@@ -118,9 +119,10 @@ def test_the_report_comes_across_as_balanced_journals(
     assert _net(db_session, "Supplies", "Office Expense") == Decimal("45.00")
     assert _net(db_session, "Software", "Office Expense") == Decimal("30.00")
     assert _net(db_session, "Card Fees") == Decimal("25.00")
-    check = next(t for t in journals if t.reference.startswith("Check 1001"))
+    # QuickBooks' Num is the reference, its Name the payee (#663)
+    check = next(t for t in journals if t.reference == "1001")
     assert (
-        check.date.isoformat() == "2024-01-08" and "Office Depot" in check.description
+        check.date.isoformat() == "2024-01-08" and check.description == "Office Depot"
     )
     assert len(check.lines) == 3
 
@@ -138,14 +140,14 @@ def test_a_second_upload_posts_nothing_twice(client, db_session, seed_accounts):
     )
 
 
-def test_accounts_not_in_the_chart_refuse_the_file_whole(
+def test_accounts_not_in_the_chart_post_nothing_until_answered(
     client, db_session, seed_accounts
 ):
     data = _upload(client, FIXTURE.read_bytes())
-    assert data["journals"] == 0
-    assert any(
-        "not in the chart" in e and "Lists to IIF Files" in e for e in data["errors"]
-    ), data["errors"]
+    assert data["journals"] == 0 and data["errors"] == []
+    missing = [p for p in data["problems"] if p["kind"] == "missing_account"]
+    assert {p["path"] for p in missing} >= {"Operating Checking 4321", "Card Clearing"}
+    assert "Lists to IIF Files" in data["problem_notes"]["missing_account"]
     assert (
         db_session.query(Transaction)
         .filter(Transaction.source_type == SOURCE_TYPE)
@@ -175,7 +177,7 @@ def test_a_report_without_account_headings_says_which_report_to_export(
     ]
 
 
-def test_a_section_that_does_not_add_up_refuses_the_file(
+def test_a_section_that_does_not_add_up_posts_nothing_until_answered(
     client, db_session, seed_accounts
 ):
     _chart(db_session)
@@ -189,10 +191,10 @@ def test_a_section_that_does_not_add_up_refuses_the_file(
     )
     assert "1,100.00" in text
     data = _upload(client, text.encode("cp1252"))
-    assert data["journals"] == 0
-    assert any(
-        "Rent" in e and "cut short or edited" in e for e in data["errors"]
-    ), data["errors"]
+    assert data["journals"] == 0 and data["ready"] == 8
+    (notice,) = data["problems"]
+    assert notice["kind"] == "cut_off" and "Rent" in notice["text"]
+    assert "cut short or edited" in data["problem_notes"]["cut_off"]
     assert (
         db_session.query(Transaction)
         .filter(Transaction.source_type == SOURCE_TYPE)
@@ -268,18 +270,18 @@ def test_an_account_listed_as_two_sections_is_checked_section_by_section(
     assert _net(db_session, "Operating Checking 4321") == Decimal("-477.96")
 
 
-def test_one_of_two_same_named_sections_that_does_not_add_up_still_refuses(
+def test_one_of_two_same_named_sections_that_does_not_add_up_is_named(
     client, db_session, seed_accounts
 ):
     _chart(db_session)
     data = _upload(client, _two_sections_report(second_rent_total="300.00"))
     assert data["journals"] == 0
-    cut_short = [e for e in data["errors"] if "cut short or edited" in e]
-    assert len(cut_short) == 1, data["errors"]
+    (notice,) = data["problems"]
+    assert len(notice["details"]) == 1, notice
     # that section's own figures, not the two sections added together
-    assert "Rent" in cut_short[0]
-    assert "327.96" in cut_short[0] and "300.00" in cut_short[0]
-    assert "477.96" not in cut_short[0]
+    assert "Rent" in notice["details"][0]
+    assert "327.96" in notice["details"][0] and "300.00" in notice["details"][0]
+    assert "477.96" not in notice["details"][0]
     assert (
         db_session.query(Transaction)
         .filter(Transaction.source_type == SOURCE_TYPE)
