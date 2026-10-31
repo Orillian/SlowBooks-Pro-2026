@@ -629,11 +629,19 @@ def assert_voidable_kind(txn: Transaction) -> None:
         from app.services.reclassify import source_label
 
         label = source_label(txn.source_type).lower()
-        what = ("an " if label[:1] in "aeiou" else "a ") + label
+        # which one, when the posting carries its number (an invoice's
+        # does): "invoice 1001", else "an invoice" (2.31.2 gate)
+        ref = (txn.reference or "").strip()
+        what = (
+            f"{label} {ref}"
+            if ref
+            else ("an " if label[:1] in "aeiou" else "a ") + label
+        )
+        which = f"{label} {ref}" if ref else f"the {label}"
         raise HTTPException(
             status_code=400,
             detail=f"This is {what}'s posting, not a journal entry of its own. "
-            f"Void the {label} itself; that reverses this posting with it.",
+            f"Void {which} itself; that reverses this posting with it.",
         )
 
 

@@ -165,8 +165,8 @@ def test_a_transaction_that_does_not_balance_waits_for_an_answer(
         "amount": "1010.00",
         "off": "10.00",
         "rows": [8, 38],
-        "text": "Check 1002 of 01/31/2024 does not balance (10.00 over 2 lines, "
-        "rows 8, 38)",
+        "text": "Check 1002 of 01/31/2024 does not balance: 10.00 more in debits, "
+        "on 2 lines (rows 8, 38)",
     }
     note = data["problem_notes"]["unbalanced"]
     assert "3950 Import Differences" in note and "equity" in note

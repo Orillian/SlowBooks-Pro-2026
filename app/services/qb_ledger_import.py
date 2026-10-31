@@ -405,11 +405,19 @@ def group_journals(lines: list[dict]) -> tuple[list[list[dict]], list[str]]:
 
 
 def _unbalanced_words(group: list[dict]) -> str:
+    """'Check 1002 of 01/31/2024 does not balance: 1,000.00 more in credits,
+    on 1 line (row 8)', the side said in words, as the page says it (2.31.2
+    gate: the signed figure and "1 lines" read wrong)."""
     first = group[0]
     label = f"{first['type']} {first['num']}".strip()
+    off = _off(group)
+    rows = [str(ln["row"]) for ln in group[:6]]
+    more = " and more" if len(group) > 6 else ""
+    lines = f"{len(group)} line" + ("" if len(group) == 1 else "s")
+    where = ("row " if len(rows) == 1 else "rows ") + ", ".join(rows) + more
     return (
-        f"{label} of {first['date']:%m/%d/%Y} does not balance ({_off(group):,.2f} "
-        f"over {len(group)} lines, rows {', '.join(str(ln['row']) for ln in group[:6])})"
+        f"{label} of {first['date']:%m/%d/%Y} does not balance: {abs(off):,.2f} "
+        f"more in {'debits' if off > 0 else 'credits'}, on {lines} ({where})"
     )
 
 

@@ -65,9 +65,10 @@ def test_a_voided_invoices_posting_is_not_reversed_again(
     r = client.post(f"/api/journal/{posting.id}/void")
 
     assert r.status_code == 400, r.text
+    number = inv["invoice_number"]
     assert r.json()["detail"] == (
-        "This is an invoice's posting, not a journal entry of its own. "
-        "Void the invoice itself; that reverses this posting with it."
+        f"This is invoice {number}'s posting, not a journal entry of its own. "
+        f"Void invoice {number} itself; that reverses this posting with it."
     )
     db_session.expire_all()
     assert (db_session.query(Transaction).count(), _balance(db_session, ar)) == before
@@ -86,7 +87,7 @@ def test_an_open_invoices_posting_is_refused_too(
     r = client.post(f"/api/journal/{posting.id}/void")
 
     assert r.status_code == 400, r.text
-    assert "Void the invoice itself" in r.json()["detail"]
+    assert f"Void invoice {inv['invoice_number']} itself" in r.json()["detail"]
     db_session.expire_all()
     assert db_session.query(Transaction).count() == count
     assert client.get(f"/api/invoices/{inv['id']}").json()["status"] != "void"
