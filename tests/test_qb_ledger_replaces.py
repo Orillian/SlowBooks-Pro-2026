@@ -13,13 +13,26 @@ entry. And a voided partial entry kept its key, so the corrected file never
 brought that transaction in (0 posted, 8 skipped).
 
 Now an entry posted with a difference is marked partial
-(transactions.source_difference). A later file's journal of the same
-QuickBooks Type, Num and Date, whatever its name, is listed as replacing it,
-the partial entry's date, amount and difference beside it: ticked, the
-partial entry is voided (its usual reversal) and the file's posts; unticked,
-both stay as they are and the file's is left out. A partial entry voided by
-hand frees its key. Possible Duplicates pairs two imported entries again
-when either is partial.
+(transactions.source_difference). One rule tells that a journal of a file
+and an entry in the books are one QuickBooks transaction (holds): the same
+Type, Num and Date, and every line of the one, its account and amount,
+among the other's. A later file's journals that hold a partial entry and
+more are listed as replacing it, the partial entry's date, amount and
+difference beside them: ticked, the partial entry is voided (its usual
+reversal) and the file's post; unticked, both stay as they are and the
+file's are left out. A copy still off posts as a partial entry again, and
+the whole transaction replaces that in turn. A partial entry's key never
+counts as imported, voided by hand or by a replacement; a cut copy that an
+entry in the books holds is a duplicate. Possible Duplicates pairs two
+imported entries again when either is partial.
+
+The second review (#663) found what Type, Num and Date alone did: a
+replaced partial entry's key, kept as imported, hid the whole transaction
+from the next file (partial, then partial, then whole: the whole file
+skipped; two same-day deposits merged by a cut: one lost); a 5.00 interest
+deposit of the same day was offered as replacing a 100.00 walk-in's
+partial entry, and held back while that was unticked; and the old cut file
+uploaded after the corrected one posted its transaction a second time.
 """
 
 from datetime import date
@@ -29,7 +42,7 @@ from app.models.accounts import Account
 from app.models.banking import Reconciliation
 from app.models.transactions import Transaction, TransactionLine
 from app.services.qb_ledger_import import SOURCE_TYPE
-from tests.qb_ledger_files import build, grand, heading, row, send, total
+from tests.qb_ledger_files import build, grand, heading, post, row, send, total
 from tests.test_qb_desktop_ledger import FIXTURE, _chart
 from tests.test_qb_ledger_problems import CHECK_1002, UNBALANCED
 
@@ -454,3 +467,680 @@ def test_possible_duplicates_pairs_imported_entries_when_one_is_partial(
     assert {r["transaction_id"] for r in group["entries"]} == {
         t.id for t in _imported(db_session)
     }
+
+
+# ── the second review: one rule, holds ───────────────────────────────────
+
+ACME = row("Check", "01/05/2024", "101", "Acme", "", "-SPLIT-", "", "60.00")
+ACME_RENT = row("Check", "01/05/2024", "101", "Acme", "", "Checking", "40.00", "")
+ACME_UTIL = row("Check", "01/05/2024", "101", "Acme", "", "Checking", "20.00", "")
+# filtered to Checking: the bank line only
+ACME_BANK = build(
+    [
+        heading("Checking"),
+        ACME,
+        total("Checking", "0.00", "60.00"),
+        grand("0.00", "60.00"),
+    ]
+)
+# filtered to Checking and Rent or Lease: still 20.00 off
+ACME_RENT_ONLY = build(
+    [
+        heading("Checking"),
+        ACME,
+        total("Checking", "0.00", "60.00"),
+        heading("Rent or Lease"),
+        ACME_RENT,
+        total("Rent or Lease", "40.00", "0.00"),
+        grand("40.00", "60.00"),
+    ]
+)
+ACME_WHOLE = build(
+    [
+        heading("Checking"),
+        ACME,
+        total("Checking", "0.00", "60.00"),
+        heading("Rent or Lease"),
+        ACME_RENT,
+        total("Rent or Lease", "40.00", "0.00"),
+        heading("Utilities"),
+        ACME_UTIL,
+        total("Utilities", "20.00", "0.00"),
+        grand("60.00", "60.00"),
+    ]
+)
+
+
+def _accept(client, data, **more):
+    keys = [p["key"] for p in _of(send(client, data), "unbalanced")]
+    assert keys, "nothing to accept"
+    return send(client, data, {"unbalanced": keys, **more})
+
+
+def _replace(client, data, **more):
+    keys = [p["key"] for p in _of(send(client, data), "replaces")]
+    assert keys, "nothing replaces"
+    return send(client, data, {"replaces": keys, **more})
+
+
+def test_partial_then_partial_then_the_whole_transaction(
+    client, db_session, seed_accounts
+):
+    """The reviewer's blocker: a copy still off replaced the partial entry
+    and posted as a partial entry itself; the replaced entry's key stayed
+    "already imported", so the whole file was skipped as a duplicate and
+    3950 kept 20.00 for good."""
+    _accept(client, ACME_BANK)
+    listed = send(client, ACME_RENT_ONLY)
+    (still,) = _of(listed, "replaces")
+    # a copy still off is not the whole transaction, and the note says what
+    # a tick does with it
+    assert still["text"] == (
+        "Check 101 of 01/05/2024 is in the books as a partial entry of 60.00, "
+        "60.00 of it on 3950 Import Differences; this file has more of it, "
+        "60.00, still 20.00 off."
+    )
+    assert still["still_off"] == 1
+    note = listed["problem_notes"]["replaces"]
+    assert "has them whole" not in note
+    assert "a partial entry again" in note
+    copy = _replace(client, ACME_RENT_ONLY)
+    assert copy["journals"] == 1 and copy["accepted"] == {
+        "unbalanced": 1,
+        "accounts": [],
+        "cut_off": False,
+        "replaced": 1,
+    }
+    assert [t.source_difference for t in _imported(db_session)] == [
+        Decimal("-60.00"),
+        Decimal("-20.00"),
+    ]
+    data = send(client, ACME_WHOLE)
+    (group,) = _of(data, "replaces")
+    assert [p["difference"] for p in group["partial"]] == ["-20.00"]
+    assert (group["amount"], group["off"]) == ("60.00", "0.00")
+    assert group["text"].endswith("this file has the whole transaction, 60.00.")
+    assert "This file has them whole." in data["problem_notes"]["replaces"]
+    data = send(client, ACME_WHOLE, {"replaces": [group["key"]]})
+    assert data["journals"] == 1 and data["accepted"]["replaced"] == 1
+    assert _balance(db_session, "Checking") == Decimal("-60.00")
+    assert _balance(db_session, "Rent or Lease") == Decimal("40.00")
+    assert _balance(db_session, "Utilities") == Decimal("20.00")
+    assert _balance(db_session, "Import Differences") == 0
+    # each of the three files again: nothing more, nothing asked
+    for again in (ACME_WHOLE, ACME_RENT_ONLY, ACME_BANK):
+        data = send(client, again)
+        assert data["journals"] == 0 and _kinds(data) == [], data.get("problems")
+        assert data["duplicates_skipped"] == 1
+    assert _balance(db_session, "Checking") == Decimal("-60.00")
+
+
+def test_the_copy_voided_by_hand_lets_the_whole_transaction_in(
+    client, db_session, seed_accounts
+):
+    """Voiding by hand did not free it either: the first partial entry's key
+    stayed taken through its replacement, so the whole file posted nothing."""
+    _accept(client, ACME_BANK)
+    _replace(client, ACME_RENT_ONLY)
+    copy = next(t for t in _imported(db_session) if t.source_difference == -20)
+    assert client.post(f"/api/journal/{copy.id}/void").status_code == 200
+    data = send(client, ACME_WHOLE)
+    assert data["journals"] == 1 and "problems" not in data
+    assert _balance(db_session, "Checking") == Decimal("-60.00")
+    assert _balance(db_session, "Utilities") == Decimal("20.00")
+    assert _balance(db_session, "Import Differences") == 0
+
+
+WALK_IN_BANK = row(
+    "Deposit", "03/01/2024", "", "Walk-in", "", "Service Income", "100.00"
+)
+WALK_IN_INCOME = row(
+    "Deposit", "03/01/2024", "", "Walk-in", "", "Checking", "", "100.00"
+)
+BANK_BANK = row("Deposit", "03/01/2024", "", "Bank", "", "Other Income", "5.00")
+BANK_INCOME = row("Deposit", "03/01/2024", "", "Bank", "", "Checking", "", "5.00")
+
+
+def test_two_deposits_merged_by_a_cut_are_replaced_by_both(
+    client, db_session, seed_accounts
+):
+    """The reviewer's second blocker: two same-day deposits with no Num. A
+    file cut inside Checking had the walk-in's bank line; one cut inside
+    Other Income had both bank lines and the walk-in's income line, merged
+    into one entry 5.00 off, which replaced the first. The whole file has
+    them as two journals: the walk-in's key was the replaced entry's, so it
+    was skipped, and the bank's alone replaced the merged entry. Checking
+    ended at 5.00 where the books say 105.00."""
+    cut = build([heading("Checking"), WALK_IN_BANK])
+    _accept(client, cut, cut_off=True)
+    merged = build(
+        [
+            heading("Checking"),
+            WALK_IN_BANK,
+            BANK_BANK,
+            total("Checking", "105.00", "0.00"),
+            heading("Service Income"),
+            WALK_IN_INCOME,
+            total("Service Income", "0.00", "100.00"),
+            heading("Other Income"),
+        ]
+    )
+    _replace(client, merged, cut_off=True)
+    whole = build(
+        [
+            heading("Checking"),
+            WALK_IN_BANK,
+            BANK_BANK,
+            total("Checking", "105.00", "0.00"),
+            heading("Service Income"),
+            WALK_IN_INCOME,
+            total("Service Income", "0.00", "100.00"),
+            heading("Other Income"),
+            BANK_INCOME,
+            total("Other Income", "0.00", "5.00"),
+            grand("105.00", "105.00"),
+        ]
+    )
+    data = send(client, whole)
+    (group,) = _of(data, "replaces")
+    assert group["journals"] == 2 and group["names"] == ["Walk-in", "Bank"]
+    assert [p["difference"] for p in group["partial"]] == ["5.00"]
+    # two transactions, not "the whole transaction"
+    assert group["text"] == (
+        "Deposit of 03/01/2024 is in the books as a partial entry of 105.00, "
+        "5.00 of it on 3950 Import Differences; this file has it as 2 "
+        "transactions, 105.00 in all, each whole."
+    )
+    data = send(client, whole, {"replaces": [group["key"]]})
+    assert data["journals"] == 2 and data["accepted"]["replaced"] == 1
+    assert _balance(db_session, "Checking") == Decimal("105.00")
+    assert _balance(db_session, "Service Income") == Decimal("-100.00")
+    assert _balance(db_session, "Other Income") == Decimal("-5.00")
+    assert _balance(db_session, "Import Differences") == 0
+
+
+def _merged_after_the_walk_in(client):
+    """The walk-in's deposit whole from a file of its own, then a cut file
+    that merges it with the bank's bank line, accepted: the merged partial
+    entry holds the walk-in's lines a second time."""
+    walk_in = build(
+        [
+            heading("Checking"),
+            WALK_IN_BANK,
+            total("Checking", "100.00", "0.00"),
+            heading("Service Income"),
+            WALK_IN_INCOME,
+            total("Service Income", "0.00", "100.00"),
+            grand("100.00", "100.00"),
+        ]
+    )
+    assert send(client, walk_in)["journals"] == 1
+    merged = build(
+        [
+            heading("Checking"),
+            WALK_IN_BANK,
+            BANK_BANK,
+            total("Checking", "105.00", "0.00"),
+            heading("Service Income"),
+            WALK_IN_INCOME,
+            total("Service Income", "0.00", "100.00"),
+            heading("Other Income"),
+        ]
+    )
+    return walk_in, merged
+
+
+WHOLE_DEPOSITS = build(
+    [
+        heading("Checking"),
+        WALK_IN_BANK,
+        BANK_BANK,
+        total("Checking", "105.00", "0.00"),
+        heading("Service Income"),
+        WALK_IN_INCOME,
+        total("Service Income", "0.00", "100.00"),
+        heading("Other Income"),
+        BANK_INCOME,
+        total("Other Income", "0.00", "5.00"),
+        grand("105.00", "105.00"),
+    ]
+)
+
+
+def test_a_journal_here_only_by_a_voided_entrys_key_posts_in_the_replacement(
+    client, db_session, seed_accounts
+):
+    """In a group being replaced, a journal that is here only by a key no
+    entry that stands holds (its whole entry was voided by hand) posts with
+    the rest: the partial entry it replaces held its lines."""
+    walk_in, merged = _merged_after_the_walk_in(client)
+    entry = _imported(db_session)[0]
+    assert client.post(f"/api/journal/{entry.id}/void").status_code == 200
+    # alone, the voided entry's file stays out: the void stands
+    assert send(client, walk_in)["journals"] == 0
+    _accept(client, merged, cut_off=True)
+    data = send(client, WHOLE_DEPOSITS)
+    (group,) = _of(data, "replaces")
+    assert group["journals"] == 2
+    data = send(client, WHOLE_DEPOSITS, {"replaces": [group["key"]]})
+    assert data["journals"] == 2 and data["duplicates_skipped"] == 0
+    assert _balance(db_session, "Checking") == Decimal("105.00")
+    assert _balance(db_session, "Import Differences") == 0
+
+
+def test_a_journal_a_standing_entry_has_counts_in_the_replacement_but_never_posts(
+    client, db_session, seed_accounts
+):
+    """The walk-in's whole entry stands, and the merged partial entry holds
+    its lines too (Checking 205.00). The whole file's two journals hold the
+    partial entry: ticked, it is voided, the bank's deposit posts, and the
+    walk-in's, in the books already, is a duplicate."""
+    _, merged = _merged_after_the_walk_in(client)
+    _accept(client, merged, cut_off=True)
+    assert _balance(db_session, "Checking") == Decimal("205.00")
+    data = send(client, WHOLE_DEPOSITS)
+    assert data["duplicates_skipped"] == 1
+    (group,) = _of(data, "replaces")
+    assert group["journals"] == 2
+    assert group["text"].endswith(
+        "each whole. One of them is in the books already, whole, and is not "
+        "posted again."
+    )
+    data = send(client, WHOLE_DEPOSITS, {"replaces": [group["key"]]})
+    assert data["journals"] == 1 and data["duplicates_skipped"] == 1
+    assert _balance(db_session, "Checking") == Decimal("105.00")
+    assert _balance(db_session, "Service Income") == Decimal("-100.00")
+    assert _balance(db_session, "Other Income") == Decimal("-5.00")
+    assert _balance(db_session, "Import Differences") == 0
+
+
+# the walk-in's deposit with only its bank line, and the bank's interest:
+# one Type, Num and Date, two transactions
+WALK_IN_CHECKING_ONLY = build(
+    [
+        heading("Checking"),
+        WALK_IN_BANK,
+        total("Checking", "100.00", "0.00"),
+        grand("100.00", "0.00"),
+    ]
+)
+INTEREST = row(
+    "Deposit", "03/01/2024", "", "First Bank", "interest", "Other Income", "5.00"
+)
+INTEREST_INCOME = row(
+    "Deposit", "03/01/2024", "", "First Bank", "interest", "Savings", "", "5.00"
+)
+
+
+def test_another_transaction_of_the_same_type_num_and_date_imports_on_its_own(
+    client, db_session, seed_accounts
+):
+    """The reviewer's file: the 5.00 interest deposit on Savings was listed
+    as replacing the walk-in's 100.00 partial entry (one Type, Num and Date),
+    ticked it voided that entry, and unticked it was held back. It holds
+    none of the walk-in's lines, so it imports at once."""
+    _accept(client, WALK_IN_CHECKING_ONLY)
+    savings = build(
+        [
+            heading("Savings"),
+            INTEREST,
+            total("Savings", "5.00", "0.00"),
+            heading("Other Income"),
+            INTEREST_INCOME,
+            total("Other Income", "0.00", "5.00"),
+            grand("5.00", "5.00"),
+        ]
+    )
+    data = send(client, savings)
+    assert "problems" not in data and data["journals"] == 1
+    assert _balance(db_session, "Savings") == Decimal("5.00")
+    assert _voids(db_session) == []
+    # the walk-in's partial entry stands
+    assert _balance(db_session, "Checking") == Decimal("100.00")
+    assert _balance(db_session, "Import Differences") == Decimal("-100.00")
+
+
+def test_the_complete_file_holds_back_only_what_replaces(
+    client, db_session, seed_accounts
+):
+    """The complete file has both deposits whole: the walk-in's replaces its
+    partial entry, and the interest, a transaction of its own, imports
+    whatever the answer (it was held back with the replacement)."""
+    _accept(client, WALK_IN_CHECKING_ONLY)
+    complete = build(
+        [
+            heading("Checking"),
+            WALK_IN_BANK,
+            total("Checking", "100.00", "0.00"),
+            heading("Savings"),
+            INTEREST,
+            total("Savings", "5.00", "0.00"),
+            heading("Service Income"),
+            WALK_IN_INCOME,
+            total("Service Income", "0.00", "100.00"),
+            heading("Other Income"),
+            INTEREST_INCOME,
+            total("Other Income", "0.00", "5.00"),
+            grand("105.00", "105.00"),
+        ]
+    )
+    data = send(client, complete)
+    assert data["ready"] == 1
+    (group,) = _of(data, "replaces")
+    assert (group["journals"], group["names"]) == (1, ["Walk-in"])
+    assert group["amount"] == "100.00"
+    data = send(client, complete, {})
+    assert data["journals"] == 1 and data["left_out"]["replaces"] == 1
+    assert _balance(db_session, "Savings") == Decimal("5.00")
+    assert _balance(db_session, "Checking") == Decimal("100.00")
+    data = send(client, complete, {"replaces": [group["key"]]})
+    assert data["journals"] == 1 and data["duplicates_skipped"] == 1
+    assert _balance(db_session, "Checking") == Decimal("100.00")
+    assert _balance(db_session, "Service Income") == Decimal("-100.00")
+    assert _balance(db_session, "Import Differences") == 0
+
+
+def test_a_replacement_voids_only_the_partial_entries_it_holds(
+    client, db_session, seed_accounts
+):
+    """Two partial entries of one Type, Num and Date: the walk-in's bank line
+    and the interest's Savings line, each from a file of its own. A file
+    with the walk-in's deposit whole replaces the walk-in's alone."""
+    _accept(client, WALK_IN_CHECKING_ONLY)
+    _accept(
+        client,
+        build(
+            [
+                heading("Savings"),
+                INTEREST,
+                total("Savings", "5.00", "0.00"),
+                grand("5.00", "0.00"),
+            ]
+        ),
+    )
+    walk_in, interest = _imported(db_session)
+    walk_in_whole = build(
+        [
+            heading("Checking"),
+            WALK_IN_BANK,
+            total("Checking", "100.00", "0.00"),
+            heading("Service Income"),
+            WALK_IN_INCOME,
+            total("Service Income", "0.00", "100.00"),
+            grand("100.00", "100.00"),
+        ]
+    )
+    data = send(client, walk_in_whole)
+    (group,) = _of(data, "replaces")
+    assert [p["id"] for p in group["partial"]] == [walk_in.id]
+    send(client, walk_in_whole, {"replaces": [group["key"]]})
+    assert {v.source_id for v in _voids(db_session)} == {walk_in.id}
+    assert _balance(db_session, "Checking") == Decimal("100.00")
+    assert _balance(db_session, "Savings") == Decimal("5.00")
+    assert _balance(db_session, "Import Differences") == Decimal("-5.00")
+
+
+def test_a_replacement_whose_copy_cannot_post_keeps_the_partial_entry(
+    client, db_session, seed_accounts
+):
+    """The void and the post are one: a copy the books refuse (a line with
+    both a debit and a credit) leaves the partial entry as it was."""
+    _accept(client, ACME_BANK)
+    bad = build(
+        [
+            heading("Checking"),
+            ACME,
+            total("Checking", "0.00", "60.00"),
+            heading("Rent or Lease"),
+            row("Check", "01/05/2024", "101", "Acme", "", "Checking", "40.00", "3.00"),
+            total("Rent or Lease", "40.00", "3.00"),
+            heading("Utilities"),
+            ACME_UTIL,
+            total("Utilities", "20.00", "0.00"),
+            grand("60.00", "63.00"),
+        ]
+    )
+    (group,) = _of(send(client, bad), "replaces")
+    r = post(client, bad, {"replaces": [group["key"]]})
+    assert r.status_code == 400, r.text
+    db_session.expire_all()
+    assert _voids(db_session) == []
+    (entry,) = _imported(db_session)
+    assert entry.source_difference == Decimal("-60.00")
+    assert _balance(db_session, "Checking") == Decimal("-60.00")
+
+
+# ── a cut copy of an entry in the books ──────────────────────────────────
+
+
+def test_the_old_cut_file_after_a_hand_void_and_the_corrected_file(
+    client, db_session, seed_accounts
+):
+    """The reviewer's file: the partial entry voided by hand, the corrected
+    file imported, then the old cut file again. It was listed as cut off
+    and unbalanced, and ticked, Checking went to -200.00. The corrected
+    file's entry holds what the cut file has of it: a duplicate."""
+    gj = build(
+        [
+            heading("Checking"),
+            GJ_BANK,
+            total("Checking", "0.00", "100.00"),
+            heading("Accounts Receivable"),
+        ]
+    )
+    _accept(client, gj, cut_off=True)
+    (partial,) = _imported(db_session)
+    assert client.post(f"/api/journal/{partial.id}/void").status_code == 200
+    whole = build(
+        [
+            heading("Checking"),
+            GJ_BANK,
+            total("Checking", "0.00", "100.00"),
+            heading("Accounts Receivable"),
+            GJ_AR,
+            total("Accounts Receivable", "100.00", "0.00"),
+            grand("100.00", "100.00"),
+        ]
+    )
+    assert send(client, whole)["journals"] == 1
+    again = send(client, gj)
+    assert again["journals"] == 0 and again["duplicates_skipped"] == 1
+    assert "problems" not in again
+    # the notice for the cut file is a warning, with nothing to answer
+    assert any("ends inside Accounts Receivable" in w for w in again["warnings"])
+    assert _balance(db_session, "Checking") == Decimal("-100.00")
+
+
+def test_the_cut_file_after_the_complete_one_is_a_duplicate(
+    client, db_session, seed_accounts
+):
+    data = send(client, COMPLETE)
+    assert data["journals"] == 2
+    again = send(client, CUT)
+    assert again["journals"] == 0 and again["duplicates_skipped"] == 2
+    assert "problems" not in again
+    # the answers of a list made before change nothing either
+    again = send(
+        client,
+        CUT,
+        {
+            "cut_off": True,
+            "unbalanced": [
+                "Check 101 · 2024-01-05 · Acme",
+                "General Journal 31 · 2024-01-31",
+            ],
+        },
+    )
+    assert again["journals"] == 0 and again["duplicates_skipped"] == 2
+    assert _balance(db_session, "Checking") == Decimal("-160.00")
+    # nothing was ever off
+    assert not db_session.query(Account).filter_by(name="Import Differences").count()
+    # the register shows each once, with its payee: the cut file's copy,
+    # which named no one, never came in
+    from app.services.bank_register import account_register
+
+    checking = db_session.query(Account).filter_by(name="Checking").one()
+    entries = account_register(db_session, checking)["entries"]
+    assert [(e["payee"], e["amount"]) for e in entries] == [
+        ("Acme", -60.0),
+        ("Smith", -100.0),
+    ]
+
+
+def test_a_partial_entry_in_a_period_closed_since_is_left_as_it_is(
+    client, db_session, seed_accounts
+):
+    """The reviewer's probe: a partial entry, then the books closed through
+    its date. Its void would be refused, so the whole file lists no
+    replacement: its transaction is in a closed period, a warning says so,
+    and nothing posts. Once the closing date moves, it replaces."""
+    from app.models.settings import Settings
+
+    _accept(client, ACME_BANK)
+    db_session.add(Settings(key="closing_date", value="2024-01-31"))
+    db_session.commit()
+    data = send(client, ACME_WHOLE)
+    assert "problems" not in data and data["journals"] == 0
+    assert data["left_out"]["closed_period"] == 1
+    assert any("closed through 01/31/2024" in w for w in data["warnings"])
+    assert _voids(db_session) == []
+    db_session.query(Settings).filter_by(key="closing_date").delete()
+    db_session.commit()
+    data = _replace(client, ACME_WHOLE)
+    assert data["journals"] == 1 and data["accepted"]["replaced"] == 1
+    assert _balance(db_session, "Utilities") == Decimal("20.00")
+    assert _balance(db_session, "Import Differences") == 0
+
+
+def test_a_file_line_with_the_differences_memo_is_one_of_its_lines(
+    client, db_session, seed_accounts
+):
+    """A partial entry reads as the lines its file had: the line left out is
+    the one the import wrote for its difference, last, even when a line of
+    the file has the same memo and amount."""
+    from app.services.qb_ledger_import import DIFFERENCE_MEMO, entry_amounts
+
+    cut = build(
+        [
+            heading("Checking"),
+            row("Check", "01/09/2024", "105", "Acme", "", "-SPLIT-", "", "120.00"),
+            total("Checking", "0.00", "120.00"),
+            heading("Rent or Lease"),
+            row(
+                "Check",
+                "01/09/2024",
+                "105",
+                "Acme",
+                DIFFERENCE_MEMO,
+                "Checking",
+                "60.00",
+                "",
+            ),
+            total("Rent or Lease", "60.00", "0.00"),
+            grand("60.00", "120.00"),
+        ]
+    )
+    _accept(client, cut)
+    (entry,) = _imported(db_session)
+    rent = db_session.query(Account).filter_by(name="Rent or Lease").one()
+    checking = db_session.query(Account).filter_by(name="Checking").one()
+    got = entry_amounts(db_session, {entry.id: entry.source_difference})
+    assert got[entry.id] == {
+        (checking.id, Decimal("-120.00")): 1,
+        (rent.id, Decimal("60.00")): 1,
+    }
+    again = send(client, cut)
+    assert again["journals"] == 0 and _kinds(again) == []
+    assert again["duplicates_skipped"] == 1
+
+
+def test_two_partial_entries_one_journal_holds_are_replaced_together(
+    client, db_session, seed_accounts
+):
+    """The check's bank line from a file filtered to Checking, its rent line
+    from one filtered to Rent: two partial entries. The whole check holds
+    both, and replaces both."""
+    _accept(client, ACME_BANK)
+    _accept(
+        client,
+        build(
+            [
+                heading("Rent or Lease"),
+                ACME_RENT,
+                total("Rent or Lease", "40.00", "0.00"),
+                grand("40.00", "0.00"),
+            ]
+        ),
+    )
+    data = send(client, ACME_WHOLE)
+    (group,) = _of(data, "replaces")
+    assert group["key"] == "Check 101 · 2024-01-05"
+    assert [p["difference"] for p in group["partial"]] == ["-60.00", "40.00"]
+    assert group["text"] == (
+        "Check 101 of 01/05/2024 is in the books as 2 partial entries of 100.00 "
+        "in all, 20.00 of it on 3950 Import Differences; this file has the whole "
+        "transaction, 60.00."
+    )
+    data = send(client, ACME_WHOLE, {"replaces": [group["key"]]})
+    assert data["journals"] == 1 and data["accepted"]["replaced"] == 2
+    assert _balance(db_session, "Checking") == Decimal("-60.00")
+    assert _balance(db_session, "Rent or Lease") == Decimal("40.00")
+    assert _balance(db_session, "Utilities") == Decimal("20.00")
+    assert _balance(db_session, "Import Differences") == 0
+
+
+def test_two_replacements_of_one_type_num_and_date_are_named_by_their_entry(
+    client, db_session, seed_accounts
+):
+    """The walk-in's and the interest's partial entries share a Type, Num
+    and Date; the complete file replaces each with its own deposit, two
+    rows, each named by the entry it replaces. An answer is for the entry
+    its row showed: once the interest's is replaced, its answer matches
+    nothing, and the walk-in's row is the only one."""
+    _accept(client, WALK_IN_CHECKING_ONLY)
+    _accept(
+        client,
+        build(
+            [
+                heading("Savings"),
+                INTEREST,
+                total("Savings", "5.00", "0.00"),
+                grand("5.00", "0.00"),
+            ]
+        ),
+    )
+    walk_in, interest = _imported(db_session)
+    complete = build(
+        [
+            heading("Checking"),
+            WALK_IN_BANK,
+            total("Checking", "100.00", "0.00"),
+            heading("Savings"),
+            INTEREST,
+            total("Savings", "5.00", "0.00"),
+            heading("Service Income"),
+            WALK_IN_INCOME,
+            total("Service Income", "0.00", "100.00"),
+            heading("Other Income"),
+            INTEREST_INCOME,
+            total("Other Income", "0.00", "5.00"),
+            grand("105.00", "105.00"),
+        ]
+    )
+    data = send(client, complete)
+    assert [p["key"] for p in _of(data, "replaces")] == [
+        f"Deposit · 2024-03-01 · entry {walk_in.id}",
+        f"Deposit · 2024-03-01 · entry {interest.id}",
+    ]
+    theirs = f"Deposit · 2024-03-01 · entry {interest.id}"
+    data = send(client, complete, {"replaces": [theirs]})
+    assert data["journals"] == 1 and data["accepted"]["replaced"] == 1
+    assert data["left_out"]["replaces"] == 1
+    assert {v.source_id for v in _voids(db_session)} == {interest.id}
+    # the same answer again replaces nothing more
+    data = send(client, complete, {"replaces": [theirs]})
+    assert data["journals"] == 0 and data["accepted"]["replaced"] == 0
+    assert {v.source_id for v in _voids(db_session)} == {interest.id}
+    (left,) = _of(send(client, complete), "replaces")
+    assert left["key"] == "Deposit · 2024-03-01"
+    assert [p["id"] for p in left["partial"]] == [walk_in.id]

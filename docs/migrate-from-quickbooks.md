@@ -144,10 +144,14 @@ with the balance QuickBooks shows. Uploading it again posts nothing twice.
 
 The file is checked first. One that checks out imports at once. A row
 whose date or amount cannot be read refuses the whole file, every such row
-listed: a guess would post a wrong date or amount. QuickBooks writes a date
-as month/day/year and an amount as 1,234.56; a file whose dates are all
-day/month/year (one with a 20/03/2024 in it, and none with a second part
-over 12) is read that way, and the result says so. One with other problems
+listed: a guess would post a wrong date or amount. A date is read as
+month/day/year (01/31/2024), the way QuickBooks Desktop writes it in the
+United States, and an amount as 1,234.56. QuickBooks Desktop writes its
+dates in the order of Windows' region setting, so a report exported under
+another region's format has day-first dates (20/03/2024) and is refused,
+the sentence above the rows saying the dates look day first: in Windows,
+set the region's format to English (United States) (Control Panel >
+Region), export the report again and import that. One with other problems
 imports nothing yet (since 2.31.2): the page lists the problems, grouped,
 for you to tick the ones to accept and leave the rest:
 
@@ -187,17 +191,29 @@ result says how many were left out and why.
 
 A transaction you left out comes in from a corrected file later, and what
 posted whole is skipped then. One you accepted with its difference is a
-**partial entry**, and a later file never posts it a second time: a
-transaction of the same QuickBooks Type, Num and date (whatever its name,
-which a cut can change) is listed among the transactions that **replace a
-partial entry in the books**, the partial entry's date, amount and
-difference beside it. Ticked, the partial entry is voided (its usual
-reversal, on its own date) and the file's copy posts in its place;
-unticked, both stay as they are and the file's copy is left out. Nothing
-is ticked to start with. A partial entry in a completed reconciliation is
-not replaced until that reconciliation is undone, and one you void
-yourself no longer counts as imported, so the next file brings that
-transaction in. The same cut file uploaded again posts nothing.
+**partial entry**, and a later file never posts it a second time. A
+transaction in a file is the one in the books when the two have the same
+QuickBooks Type, Num and date and every line of the one, its account and
+amount, is among the other's lines, whatever its name (a cut can lose
+it). A later file that has more of a partial entry's transaction lists it
+among the transactions that **replace a partial entry in the books**, the
+partial entry's date and amount beside it and what it put on Import
+Differences (a debit when the file had more credits, a credit when it had
+more debits); the parts of same-day transactions a cut merged into one
+partial entry are listed together, and the list says when the file's copy
+is still off or is several transactions. A transaction of the same Type, Num and date that holds none of
+its lines (another deposit that day) imports on its own. Ticked, the
+partial entry is voided (its usual reversal, on its own date) and the
+file's copy posts in its place; a copy that still does not balance posts
+as a partial entry again, and a later file that has it whole replaces
+that in turn. Unticked, both stay as they are and the file's copy is left
+out. Nothing is ticked to start with. A cut file whose transactions the
+books already hold (the same cut file again, or the old one after the
+corrected file) posts nothing: they are counted with the duplicates. A
+partial entry in a completed reconciliation is not replaced until that
+reconciliation is undone, and one that was voided, by you or by a
+replacement, no longer counts as imported, so the next file that has that
+transaction brings it in.
 
 In a bank or card register each entry reads as one typed there does:
 QuickBooks' **Name** is the payee, its **Num** the Ref #, each line's
@@ -208,8 +224,10 @@ checks written here. An entry with no name, such as a general journal
 entry or a transfer, has no payee and reads as its memo on the Journal
 Entries page and in reports. Possible Duplicates does not pair two imported
 entries, which QuickBooks already keeps apart, unless one of them is a
-partial entry: that is where a transaction can come in twice. Books
-imported before 2.31.2
+partial entry: that is where a transaction can come in twice. Those two
+pair when they have the same QuickBooks Type, Num and date, whatever their
+payees (a cut file can lose the line that carried the name), or a payee
+alike. Books imported before 2.31.2
 showed "Check 1001 — Name: memo" as the payee; upgrading rewrites those
 entries the same way, and leaves any it cannot read back exactly as they
 were. Either way, uploading the same file again posts nothing twice.

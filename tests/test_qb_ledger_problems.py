@@ -812,7 +812,7 @@ def test_a_file_cut_off_mid_section_says_so(client, db_session, seed_accounts):
 def test_a_row_that_cannot_be_read_refuses_the_file(client, db_session, seed_accounts):
     """The one refusal left: a row whose date or amount cannot be read is
     never guessed at, and never dropped. Here 31/01/2024 in a file whose
-    other dates are month/day/year (01/15/2024)."""
+    other dates are month/day/year (01/15/2024): it looks day first."""
     _chart(db_session)
     data = _upload(
         client,
@@ -825,9 +825,9 @@ def test_a_row_that_cannot_be_read_refuses_the_file(client, db_session, seed_acc
     )
     assert data["journals"] == 0 and "problems" not in data
     assert data["errors"][0].startswith("Nothing was imported: 1 row could not")
+    assert "The dates look day first (31/01/2024)" in data["errors"][0]
     assert data["errors"][1:] == [
-        "Row 38: the date ('31/01/2024') or an amount ('1,000.00' / '') could not "
-        "be read"
+        "Row 38: the date ('31/01/2024') is not month/day/year"
     ]
     assert _imported(db_session) == []
 

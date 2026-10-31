@@ -387,8 +387,8 @@ const IIFPage = {
             const rows = replaces.map((p, i) => {
                 const what = `${p.type}${p.num ? ` ${p.num}` : ''} of ${formatDate(p.date)}${p.name ? `, ${p.name}` : ''}`;
                 const books = (p.partial || []).map(e => `${formatDate(e.date)} · ${formatCurrency(Number(e.amount))}`);
-                const plugs = (p.partial || []).map(e => IIFPage._offWords(e.difference));
-                const said = `Replace the partial entry: ${what}, ${formatCurrency(Number(p.amount))} in this file; in the books ${books.join(' and ')}, ${plugs.join(' and ')} on Import Differences`;
+                const plugs = (p.partial || []).map(e => IIFPage._postedWords(e.difference));
+                const said = `Replace the partial entry: ${what}, ${formatCurrency(Number(p.amount))} in this file; in the books ${books.join(' and ')}, with ${plugs.map(w => `a ${w}`).join(' and ')} on Import Differences`;
                 const held = p.voidable === false;
                 return `<tr>
                     <td class="qbr-pick-cell"><input type="checkbox" class="qbr-pick" data-kind="replaces" data-key="${escapeHtml(p.key)}" tabindex="${i ? -1 : 0}" aria-label="${escapeHtml(said)}"${held ? ' aria-disabled="true" title="In a completed reconciliation: undo it to replace this entry"' : ''} onclick="IIFPage._pickClick(event)" onchange="IIFPage._reviewChanged()"></td>
@@ -406,7 +406,7 @@ const IIFPage = {
                 <p class="qbr-note">${escapeHtml(notes.replaces || '')} <span id="qbr-keys-hint-replaces">In the list, the arrow keys move from row to row and Tab leaves it.</span></p>
                 ${IIFPage._bulk('replaces', 'Transactions that replace a partial entry')}
                 <div class="qbr-scroll qbr-roving"><table aria-describedby="qbr-keys-hint-replaces">
-                    <thead><tr><th scope="col"><span class="visually-hidden">Replace</span></th><th scope="col">Date</th><th scope="col">Type</th><th scope="col">Num</th><th scope="col">Name</th><th scope="col" class="amount">In this file</th><th scope="col">In the books now</th><th scope="col" class="amount">Its difference</th></tr></thead>
+                    <thead><tr><th scope="col"><span class="visually-hidden">Replace</span></th><th scope="col">Date</th><th scope="col">Type</th><th scope="col">Num</th><th scope="col">Name</th><th scope="col" class="amount">In this file</th><th scope="col">In the books now</th><th scope="col" class="amount">On Import Differences</th></tr></thead>
                     <tbody>${rows}</tbody>
                 </table></div>
             </section>`;
@@ -518,6 +518,16 @@ const IIFPage = {
     _offWords(off) {
         const n = Number(off) || 0;
         return `${formatCurrency(Math.abs(n))} more in ${n > 0 ? 'debits' : 'credits'}`;
+    },
+
+    // What a partial entry put on Import Differences (#663): its difference
+    // is its file's debits less its credits, evened out there, so a credit
+    // of that much when the file had more debits and a debit when it had
+    // more credits. "$100.00 more in credits on Import Differences" read as
+    // Import Differences' side, the other way round.
+    _postedWords(difference) {
+        const n = Number(difference) || 0;
+        return `${formatCurrency(Math.abs(n))} ${n > 0 ? 'credit' : 'debit'}`;
     },
 
     // a missing account's row is ticked once it has a type, and cannot be
