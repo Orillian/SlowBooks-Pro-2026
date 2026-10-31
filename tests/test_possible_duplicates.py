@@ -554,6 +554,68 @@ def test_an_imported_anchor_leaves_the_next_imported_entry_out(
     assert [g["key"] for g in groups][-1] == f"{keyed.id},{a.id},{b.id}"
 
 
+def _imported(db, accounts, day, payee, other, *, num="31", difference=None):
+    """A general journal entry the ledger import posted, as it posts one
+    (#663): QuickBooks' Type and Num, a 100.00 credit to Checking and its
+    other side, on ``other`` (an account number) for a whole entry, or on
+    Import Differences for a partial one, which carries its difference."""
+    from app.services.qb_ledger_import import DIFFERENCE_MEMO, _ensure_differences
+
+    hundred, zero = Decimal("100.00"), Decimal("0")
+    if difference is None:
+        side = {"account_id": accounts[other].id, "description": "write-off"}
+    else:
+        side = {
+            "account_id": _ensure_differences(db).id,
+            "description": DIFFERENCE_MEMO,
+        }
+    txn = create_journal_entry(
+        db,
+        day,
+        payee,
+        [
+            {"account_id": accounts["1000"].id, "debit": zero, "credit": hundred},
+            {**side, "debit": hundred, "credit": zero},
+        ],
+        source_type="qb_ledger_import",
+        reference=num,
+        source_kind="General Journal",
+        source_ref=f"General Journal {num} · {day.isoformat()}",
+    )
+    txn.source_difference = difference
+    db.commit()
+    return txn
+
+
+def test_a_partial_entry_whose_cut_lost_the_payee_pairs_with_the_whole_one(
+    client, db_session, seed_accounts
+):
+    """The reviewer's pair: the whole general journal entry names Smith (its
+    A/R line), and the cut file's partial entry, which had the bank line
+    alone, names no one. A blank payee never pairs with a name; the same
+    QuickBooks Type, Num and Date does, whatever the payees."""
+    day = date(2026, 3, 31)
+    whole = _imported(db_session, seed_accounts, day, "Smith", "1100")
+    partial = _imported(
+        db_session, seed_accounts, day, "", None, difference=Decimal("-100.00")
+    )
+    # another general journal entry of the day, a number of its own
+    _imported(db_session, seed_accounts, day, "", None, num="32", difference=-100)
+    (g,) = _report(client, seed_accounts)["groups"]
+    assert g["key"] == f"{whole.id},{partial.id}"
+    assert {e["payee"] for e in g["entries"]} == {"Smith", ""}
+
+
+def test_two_whole_imported_entries_of_one_type_num_and_date_never_pair(
+    client, db_session, seed_accounts
+):
+    """QuickBooks keeps them apart; only a partial entry pairs by them."""
+    day = date(2026, 3, 31)
+    _imported(db_session, seed_accounts, day, "Smith", "1100")
+    _imported(db_session, seed_accounts, day, "", "1100")
+    assert _report(client, seed_accounts)["groups"] == []
+
+
 # ── roles ────────────────────────────────────────────────────────────────
 
 

@@ -877,7 +877,7 @@ def _cents(value) -> Decimal:
     return Decimal(value or 0).quantize(Decimal("0.01"))
 
 
-def _ttd(kind, num, day) -> tuple:
+def type_num_date(kind, num, day) -> tuple:
     """A transaction's QuickBooks Type, Num and Date as an entry stores them
     (source_kind, reference, date): with its lines (holds), what tells that
     a journal of a file and an entry are one QuickBooks transaction,
@@ -1007,7 +1007,7 @@ def _entries_here(db: Session, keys: set, ttds: set) -> dict:
         # its source_ref, else (an entry the 2.31.2 upgrade could not read
         # back) the reference that held it before
         key = r.source_ref or r.reference
-        ttd = _ttd(r.source_kind, r.reference, r.date)
+        ttd = type_num_date(r.source_kind, r.reference, r.date)
         if r.source_difference is None:
             have.add(key)
         if ttd in ttds or (r.source_difference is None and key in keys):
@@ -1434,7 +1434,7 @@ def import_ledger_report(
         first = t["lines"][0]
         t["needs"] = {missing[ln["path"]] for ln in t["lines"] if ln["path"] in missing}
         t["off"] = _off(t["lines"])
-        t["ttd"] = _ttd(first["type"], first["num"], first["date"])
+        t["ttd"] = type_num_date(first["type"], first["num"], first["date"])
         t["amounts"] = journal_amounts(t["lines"], accounts)
         t["state"] = None
     books = _entries_here(db, {t["key"] for t in txns}, {t["ttd"] for t in txns})

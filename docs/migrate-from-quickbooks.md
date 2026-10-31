@@ -222,8 +222,10 @@ checks written here. An entry with no name, such as a general journal
 entry or a transfer, has no payee and reads as its memo on the Journal
 Entries page and in reports. Possible Duplicates does not pair two imported
 entries, which QuickBooks already keeps apart, unless one of them is a
-partial entry: that is where a transaction can come in twice. Books
-imported before 2.31.2
+partial entry: that is where a transaction can come in twice. Those two
+pair when they have the same QuickBooks Type, Num and date, whatever their
+payees (a cut file can lose the line that carried the name), or a payee
+alike. Books imported before 2.31.2
 showed "Check 1001 — Name: memo" as the payee; upgrading rewrites those
 entries the same way, and leaves any it cannot read back exactly as they
 were. Either way, uploading the same file again posts nothing twice.
