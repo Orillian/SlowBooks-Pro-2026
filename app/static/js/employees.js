@@ -380,8 +380,14 @@ const EmployeesPage = {
             ]);
             el.innerHTML = EmployeesPage._renderPortalSection(id, token, access);
         } catch (err) {
-            el.innerHTML = `<p class="text-muted">Portal token unavailable: ${escapeHtml(err.message)}</p>
-                <button class="btn btn-sm btn-secondary" onclick="EmployeesPage._regeneratePortalToken(${id})">Generate Token</button>`;
+            // A role the portal is not open to (403: an employee's login is
+            // an administrator's) gets the sentence and no button it can't
+            // use (2.31.2 gate, W-89); any other failure keeps the way to
+            // make one, for the roles that may write.
+            el.innerHTML = err.status === 403
+                ? '<p class="text-muted">Only an administrator can see or make an employee\'s portal link.</p>'
+                : `<p class="text-muted">Portal token unavailable: ${escapeHtml(err.message)}</p>
+                <button class="btn btn-sm btn-secondary" data-write onclick="EmployeesPage._regeneratePortalToken(${id})">Generate Token</button>`;
         }
     },
 
