@@ -10,6 +10,7 @@ ledger's are problems to accept or leave out since #663, every one listed.
 """
 
 import io
+import re
 from datetime import date
 import json
 import shutil
@@ -60,7 +61,11 @@ def test_the_ledger_report_lists_every_transaction_that_does_not_balance(
     assert body["journals"] == 0
     assert len(body["problems"]) == 25, body["problems"][-3:]
     assert all("does not balance" in p["text"] for p in body["problems"])
-    assert not any("more" in p["text"] for p in body["problems"])
+    # every transaction listed, none folded into an "and 12 more" (each
+    # sentence says its own side, "10.00 more in credits", since 2.31.2)
+    assert not any(
+        re.search(r"\band \d[\d,]* more\b", p["text"]) for p in body["problems"]
+    )
 
 
 def test_the_categorized_sheet_lists_every_row_it_could_not_read(
