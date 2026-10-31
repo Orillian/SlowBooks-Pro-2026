@@ -1102,21 +1102,23 @@ def _replacements(txns: list[dict], partials: dict, closing) -> list[dict]:
         pool = pools.get(ttd)
         if not pool or (closing is not None and ttd[2] <= closing):
             continue
-        found = []  # (partial entries, journals), one per partial entry
+        at = {id(j): n for n, j in enumerate(pool)}
+        # (partial entries, the places of their journals in the pool): one
+        # per partial entry, joined with any that shares a journal
+        found: list[tuple[list, set]] = []
         for p in standing:
             cover = _cover(p, pool)
             if cover is None:
                 continue
-            ids = {id(j) for j in cover}
-            ps = [p]
-            for other in [f for f in found if ids & {id(j) for j in f[1]}]:
-                found.remove(other)
-                ps = other[0] + ps
-                ids |= {id(j) for j in other[1]}
-            found.append((ps, [j for j in pool if id(j) in ids]))
-        found.sort(key=lambda f: pool.index(f[1][0]))
-        for ps, js in found:
+            ps, places = [p], {at[id(j)] for j in cover}
+            for n in reversed([n for n, f in enumerate(found) if f[1] & places]):
+                other, theirs = found.pop(n)
+                ps, places = other + ps, places | theirs
+            found.append((ps, places))
+        found.sort(key=lambda f: min(f[1]))
+        for ps, places in found:
             ps = sorted(ps, key=lambda p: p["id"])
+            js = [pool[n] for n in sorted(places)]
             first = js[0]["lines"][0]
             key = f"{first['type']} {first['num']}".strip()
             key += f" · {first['date']:%Y-%m-%d}"
