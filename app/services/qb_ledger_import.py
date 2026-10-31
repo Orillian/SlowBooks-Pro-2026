@@ -1115,17 +1115,17 @@ def _replacements(txns: list[dict], partials: dict, closing) -> list[dict]:
                 ids |= {id(j) for j in other[1]}
             found.append((ps, [j for j in pool if id(j) in ids]))
         found.sort(key=lambda f: pool.index(f[1][0]))
-        for n, (ps, js) in enumerate(found, start=1):
+        for ps, js in found:
+            ps = sorted(ps, key=lambda p: p["id"])
             first = js[0]["lines"][0]
             key = f"{first['type']} {first['num']}".strip()
-            key += f" · {first['date']:%Y-%m-%d}" + (f" #{n}" if n > 1 else "")
-            groups.append(
-                {
-                    "key": key,
-                    "journals": js,
-                    "partials": sorted(ps, key=lambda p: p["id"]),
-                }
-            )
+            key += f" · {first['date']:%Y-%m-%d}"
+            if len(found) > 1:
+                # several of one Type, Num and Date, each named by the entry
+                # it replaces: an answer is for the entries the list showed,
+                # and one replaced since matches nothing
+                key += f" · entry {ps[0]['id']}"
+            groups.append({"key": key, "journals": js, "partials": ps})
     groups.sort(
         key=lambda g: (
             g["journals"][0]["lines"][0]["date"],
@@ -1216,11 +1216,13 @@ def _replaces_problem(db: Session, group: dict) -> dict:
     held = sum((Decimal(p["amount"]) for p in partial), Decimal("0"))
     plug = sum((Decimal(p["difference"]) for p in partial), Decimal("0"))
     entries = (
-        "a partial entry" if len(partial) == 1 else f"{len(partial)} partial entries"
+        f"a partial entry of {held:,.2f}"
+        if len(partial) == 1
+        else f"{len(partial)} partial entries of {held:,.2f} in all"
     )
     text = (
-        f"{label} of {first['date']:%m/%d/%Y} is in the books as {entries} "
-        f"of {held:,.2f}, {abs(plug):,.2f} of it on {_differences_label(db)}; "
+        f"{label} of {first['date']:%m/%d/%Y} is in the books as {entries}, "
+        f"{abs(plug):,.2f} of it on {_differences_label(db)}; "
         + _copy_words(journals, amount, off)
     )
     known = sum(1 for j in journals if j.get("in_books"))

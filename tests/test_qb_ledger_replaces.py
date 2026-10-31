@@ -1052,3 +1052,95 @@ def test_a_file_line_with_the_differences_memo_is_one_of_its_lines(
     again = send(client, cut)
     assert again["journals"] == 0 and _kinds(again) == []
     assert again["duplicates_skipped"] == 1
+
+
+def test_two_partial_entries_one_journal_holds_are_replaced_together(
+    client, db_session, seed_accounts
+):
+    """The check's bank line from a file filtered to Checking, its rent line
+    from one filtered to Rent: two partial entries. The whole check holds
+    both, and replaces both."""
+    _accept(client, ACME_BANK)
+    _accept(
+        client,
+        build(
+            [
+                heading("Rent or Lease"),
+                ACME_RENT,
+                total("Rent or Lease", "40.00", "0.00"),
+                grand("40.00", "0.00"),
+            ]
+        ),
+    )
+    data = send(client, ACME_WHOLE)
+    (group,) = _of(data, "replaces")
+    assert group["key"] == "Check 101 · 2024-01-05"
+    assert [p["difference"] for p in group["partial"]] == ["-60.00", "40.00"]
+    assert group["text"] == (
+        "Check 101 of 01/05/2024 is in the books as 2 partial entries of 100.00 "
+        "in all, 20.00 of it on 3950 Import Differences; this file has the whole "
+        "transaction, 60.00."
+    )
+    data = send(client, ACME_WHOLE, {"replaces": [group["key"]]})
+    assert data["journals"] == 1 and data["accepted"]["replaced"] == 2
+    assert _balance(db_session, "Checking") == Decimal("-60.00")
+    assert _balance(db_session, "Rent or Lease") == Decimal("40.00")
+    assert _balance(db_session, "Utilities") == Decimal("20.00")
+    assert _balance(db_session, "Import Differences") == 0
+
+
+def test_two_replacements_of_one_type_num_and_date_are_named_by_their_entry(
+    client, db_session, seed_accounts
+):
+    """The walk-in's and the interest's partial entries share a Type, Num
+    and Date; the complete file replaces each with its own deposit, two
+    rows, each named by the entry it replaces. An answer is for the entry
+    its row showed: once the interest's is replaced, its answer matches
+    nothing, and the walk-in's row is the only one."""
+    _accept(client, WALK_IN_CHECKING_ONLY)
+    _accept(
+        client,
+        build(
+            [
+                heading("Savings"),
+                INTEREST,
+                total("Savings", "5.00", "0.00"),
+                grand("5.00", "0.00"),
+            ]
+        ),
+    )
+    walk_in, interest = _imported(db_session)
+    complete = build(
+        [
+            heading("Checking"),
+            WALK_IN_BANK,
+            total("Checking", "100.00", "0.00"),
+            heading("Savings"),
+            INTEREST,
+            total("Savings", "5.00", "0.00"),
+            heading("Service Income"),
+            WALK_IN_INCOME,
+            total("Service Income", "0.00", "100.00"),
+            heading("Other Income"),
+            INTEREST_INCOME,
+            total("Other Income", "0.00", "5.00"),
+            grand("105.00", "105.00"),
+        ]
+    )
+    data = send(client, complete)
+    assert [p["key"] for p in _of(data, "replaces")] == [
+        f"Deposit · 2024-03-01 · entry {walk_in.id}",
+        f"Deposit · 2024-03-01 · entry {interest.id}",
+    ]
+    theirs = f"Deposit · 2024-03-01 · entry {interest.id}"
+    data = send(client, complete, {"replaces": [theirs]})
+    assert data["journals"] == 1 and data["accepted"]["replaced"] == 1
+    assert data["left_out"]["replaces"] == 1
+    assert {v.source_id for v in _voids(db_session)} == {interest.id}
+    # the same answer again replaces nothing more
+    data = send(client, complete, {"replaces": [theirs]})
+    assert data["journals"] == 0 and data["accepted"]["replaced"] == 0
+    assert {v.source_id for v in _voids(db_session)} == {interest.id}
+    (left,) = _of(send(client, complete), "replaces")
+    assert left["key"] == "Deposit · 2024-03-01"
+    assert [p["id"] for p in left["partial"]] == [walk_in.id]
