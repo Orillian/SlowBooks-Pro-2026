@@ -137,10 +137,22 @@ def test_the_form_can_ask_what_the_books_say(client, savings_with_300):
 
 
 def test_the_new_account_form_shows_the_books_and_confirms_a_difference():
-    form = re.search(r"async showAccountForm\(\).*?\n    },\n", JS, re.S).group(0)
+    form = re.search(r"async showAccountForm\([^)]*\).*?\n    },\n", JS, re.S).group(0)
     assert "_showLedgerBalance" in form and "acct-ledger-note" in form
     shower = re.search(r"async _showLedgerBalance\(form\).*?\n    },\n", JS, re.S)
     assert shower and "/banking/ledger-balance?account_id=" in shower.group(0)
     save = re.search(r"async saveAccount\(e\).*?\n    },\n", JS, re.S).group(0)
     assert "ledger_has_balance" in save and "confirm(" in save
     assert save.index("confirm(") < save.index("post_difference: true")
+
+
+def test_import_file_offers_the_feed_on_its_own_account():
+    """2.31.2 gate, NEW-189: Import file on an account with no feed offered
+    to make one, and the form opened on 1000 Checking, the list's first, so
+    every account a QuickBooks import made had to be picked again."""
+    ofx = re.search(r"async showOFXImport\(accountId\).*?\n    },\n", JS, re.S).group(0)
+    assert "BankingPage.showAccountForm(accountId)" in ofx
+    form = re.search(
+        r"async showAccountForm\(accountId = null\).*?\n    },\n", JS, re.S
+    ).group(0)
+    assert "free.some(a => a.id === accountId)) sel.value = String(accountId);" in form

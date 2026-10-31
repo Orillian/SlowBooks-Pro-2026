@@ -502,7 +502,10 @@ const BankingPage = {
     // New bank account: an existing chart account flagged bank/card, or a
     // new one; plus its feed identity and an opening balance.
     // ------------------------------------------------------------------
-    async showAccountForm() {
+    // `accountId`: the account a register's Import file asked for, chosen in
+    // the list when it has no feed yet (2.31.2 gate, NEW-189: it opened on
+    // 1000 Checking, the list's first, for every imported account).
+    async showAccountForm(accountId = null) {
         const [bankAccts, feeds] = await Promise.all([
             API.get('/accounts?bank=1&active_only=true'),
             API.get('/banking/accounts'),
@@ -545,6 +548,7 @@ const BankingPage = {
             </form>`);
         const sel = document.querySelector('select[name=account_id]');
         if (!free.length) { if (sel) sel.value = '__new__'; }
+        else if (sel && accountId != null && free.some(a => a.id === accountId)) sel.value = String(accountId);
         if (sel) BankingPage._showLedgerBalance(sel.form);
     },
 
@@ -2682,7 +2686,7 @@ const BankingPage = {
         const feeds = await API.get('/banking/accounts');
         const feed = feeds.find(f => f.account_id === accountId);
         if (!feed) {
-            if (confirm('Importing needs a bank feed (statement identity) on this account. Create one now?')) BankingPage.showAccountForm();
+            if (confirm('Importing needs a bank feed (statement identity) on this account. Create one now?')) BankingPage.showAccountForm(accountId);
             return;
         }
         const feedId = feed.id;
