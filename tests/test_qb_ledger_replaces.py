@@ -975,6 +975,41 @@ def test_the_cut_file_after_the_complete_one_is_a_duplicate(
     assert _balance(db_session, "Checking") == Decimal("-160.00")
     # nothing was ever off
     assert not db_session.query(Account).filter_by(name="Import Differences").count()
+    # the register shows each once, with its payee: the cut file's copy,
+    # which named no one, never came in
+    from app.services.bank_register import account_register
+
+    checking = db_session.query(Account).filter_by(name="Checking").one()
+    entries = account_register(db_session, checking)["entries"]
+    assert [(e["payee"], e["amount"]) for e in entries] == [
+        ("Acme", -60.0),
+        ("Smith", -100.0),
+    ]
+
+
+def test_a_partial_entry_in_a_period_closed_since_is_left_as_it_is(
+    client, db_session, seed_accounts
+):
+    """The reviewer's probe: a partial entry, then the books closed through
+    its date. Its void would be refused, so the whole file lists no
+    replacement: its transaction is in a closed period, a warning says so,
+    and nothing posts. Once the closing date moves, it replaces."""
+    from app.models.settings import Settings
+
+    _accept(client, ACME_BANK)
+    db_session.add(Settings(key="closing_date", value="2024-01-31"))
+    db_session.commit()
+    data = send(client, ACME_WHOLE)
+    assert "problems" not in data and data["journals"] == 0
+    assert data["left_out"]["closed_period"] == 1
+    assert any("closed through 01/31/2024" in w for w in data["warnings"])
+    assert _voids(db_session) == []
+    db_session.query(Settings).filter_by(key="closing_date").delete()
+    db_session.commit()
+    data = _replace(client, ACME_WHOLE)
+    assert data["journals"] == 1 and data["accepted"]["replaced"] == 1
+    assert _balance(db_session, "Utilities") == Decimal("20.00")
+    assert _balance(db_session, "Import Differences") == 0
 
 
 def test_a_file_line_with_the_differences_memo_is_one_of_its_lines(
