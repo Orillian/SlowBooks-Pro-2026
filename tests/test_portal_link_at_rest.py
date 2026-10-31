@@ -56,7 +56,7 @@ def _stored(db_session, emp_id: int):
 
 def test_a_new_link_is_not_kept_as_issued(client, db_session):
     emp = _employee(client)
-    token = client.get(f"/api/employees/{emp['id']}/portal-token").json()[
+    token = client.post(f"/api/employees/{emp['id']}/portal-token").json()[
         "portal_token"
     ]
     row = _stored(db_session, emp["id"])
@@ -68,7 +68,7 @@ def test_a_new_link_is_not_kept_as_issued(client, db_session):
 
 def test_the_link_works_and_can_be_shown_again(client, db_session):
     emp = _employee(client)
-    first = client.get(f"/api/employees/{emp['id']}/portal-token").json()
+    first = client.post(f"/api/employees/{emp['id']}/portal-token").json()
     again = client.get(f"/api/employees/{emp['id']}/portal-token").json()
     assert again["portal_url"] == first["portal_url"]
     assert first["portal_url"].endswith("/portal/" + first["portal_token"])
@@ -85,7 +85,7 @@ def test_the_link_works_and_can_be_shown_again(client, db_session):
 
 def test_a_copy_this_install_cannot_open_still_lets_the_employee_in(client, db_session):
     emp = _employee(client)
-    token = client.get(f"/api/employees/{emp['id']}/portal-token").json()[
+    token = client.post(f"/api/employees/{emp['id']}/portal-token").json()[
         "portal_token"
     ]
     db_session.execute(

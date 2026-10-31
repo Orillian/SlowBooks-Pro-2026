@@ -359,7 +359,7 @@ def test_the_type_words_are_the_screens():
 
     js = Path("app/static/js/utils.js").read_text(encoding="utf-8")
     body = re.search(
-        r"function sourceWord\(type\) \{\s*const words = \{(.*?)\};", js, re.S
+        r"function sourceWord\(type, kind\) \{\s*const words = \{(.*?)\};", js, re.S
     )
     assert body, "sourceWord's map"
     keys = set(re.findall(r"(\w+):\s*(?:'|\(\))", body.group(1)))
@@ -369,3 +369,6 @@ def test_the_type_words_are_the_screens():
     assert source_word("bill_payment_void") == "Bill payment void"
     assert source_word("some_new_kind") == "Some new kind"
     assert source_word(None) == "Journal entry"
+    # an import's own word for the row (#663)
+    assert source_word("qb_ledger_import", kind="Check") == "Check (imported)"
+    assert "if (kind) return `${kind} (imported)`;" in js

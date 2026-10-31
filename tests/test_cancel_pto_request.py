@@ -245,7 +245,7 @@ def test_a_request_approved_before_the_draw_was_recorded_assumes_its_hours(
 # The portal side
 # ---------------------------------------------------------------------------
 def _sign_in(client, emp):
-    token = client.get(f"/api/employees/{emp['id']}/portal-token").json()[
+    token = client.post(f"/api/employees/{emp['id']}/portal-token").json()[
         "portal_token"
     ]
     r = client.get(f"/portal/{token}")  # claims the link, sets the cookie

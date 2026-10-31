@@ -323,6 +323,8 @@ def create_journal_entry(
     existing_transaction: Transaction = None,
     is_adjusting: bool = False,
     posted_by: str = None,
+    source_ref: str = None,
+    source_kind: str = None,
 ) -> Transaction:
     """Create a balanced journal entry.
 
@@ -429,7 +431,9 @@ def create_journal_entry(
     )
     txn = existing_transaction
     if txn is None:
-        txn = Transaction(**header)
+        # an import's key for the row it came from (#663) and the row's own
+        # type there, set once
+        txn = Transaction(**header, source_ref=source_ref, source_kind=source_kind)
         db.add(txn)
     else:
         for key, value in header.items():
@@ -622,6 +626,14 @@ def ensure_nonprofit_accounts(db: Session) -> dict[str, Account]:
         number: ensure_account(db, number, name, atype)
         for number, name, atype in NONPROFIT_ACCOUNTS
     }
+
+
+def find_nonprofit_account(db: Session, number: str) -> Account | None:
+    """The nonprofit account `number` suggests (3300, 3400, ...), found by
+    name as ensure_account finds it, or None while the chart has none. For
+    the reads: a read never adds one (#662)."""
+    name = next(n for num, n, _t in NONPROFIT_ACCOUNTS if num == number)
+    return db.query(Account).filter(Account.name == name).first()
 
 
 def get_net_assets_without_restriction_id(db: Session) -> int:

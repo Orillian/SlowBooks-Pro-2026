@@ -102,26 +102,53 @@ def test_an_admin_token_is_refused(client):
     assert _mint(client, "keeper-bot", "bookkeeper")["role"] == "bookkeeper"
 
 
-def test_tokens_cannot_manage_identities_even_as_admin(client, db_session):
-    # An admin token made before 2.27.0 still works, and still cannot
-    # manage identities; it is made in the database as one would be.
-    from app.services.api_token_service import generate_token, hash_token
-
-    tok = generate_token()
-    db_session.add(
-        ApiToken(
-            label="root-bot",
-            token_hash=hash_token(tok),
-            token_hint=tok[:10],
-            role="admin",
-            is_active=True,
-            created_by="test",
-        )
+def test_an_admin_token_from_before_2_29_is_refused_and_flagged(
+    client, db_session, legacy_admin_token
+):
+    """#659: one made before 2.29.0 kept working until revoked. Now every
+    request it makes is a 403 that says to revoke it and make a scoped
+    token, the list flags it, and revoking it still works and is final."""
+    old = _bearer(legacy_admin_token("old-root"))
+    for call in (
+        lambda: old.get("/api/customers"),
+        lambda: old.get("/api/settings"),
+        lambda: old.put("/api/settings", json={"invoice_prefix": "A-"}),
+        lambda: old.get("/api/users"),
+        lambda: old.post("/api/tokens", json={"label": "evil", "role": "admin"}),
+    ):
+        r = call()
+        assert r.status_code == 403, r.text
+        assert '"old-root"' in r.json()["detail"]
+        assert "can't be administrators" in r.json()["detail"]
+        assert "Revoke it" in r.json()["detail"]
+    fine = _mint(client, "keeper", "bookkeeper")
+    assert {t["label"]: t["refused"] for t in client.get("/api/tokens").json()} == {
+        "old-root": True,
+        "keeper": False,
+    }
+    assert _bearer(fine["token"]).get("/api/customers").status_code == 200
+    row = db_session.query(ApiToken).filter_by(label="old-root").one()
+    # Refused requests do not count as use (skeptic pass): "last used" would
+    # read as if the program got in.
+    db_session.refresh(row)
+    assert row.last_used_at is None
+    assert (
+        client.put(f"/api/tokens/{row.id}", json={"is_active": False}).status_code
+        == 200
     )
-    db_session.commit()
-    api = _bearer(tok)
-    assert api.put("/api/settings", json={"invoice_prefix": "A-"}).status_code == 200
-    # The no-self-escalation wall
+    revoked = old.get("/api/customers")
+    assert revoked.status_code == 401 and "was revoked" in revoked.json()["detail"]
+    assert {t["label"]: t["refused"] for t in client.get("/api/tokens").json()}[
+        "old-root"
+    ] is False
+
+
+def test_tokens_cannot_manage_identities(client):
+    """The no-self-escalation wall: a token of any role is kept out of
+    users and tokens (a leaked bookkeeper token must not mint itself an
+    admin one). Admin tokens, the old vector, are refused outright now."""
+    api = _bearer(_mint(client, "keeper-bot", "bookkeeper")["token"])
+    assert api.put("/api/settings", json={"invoice_prefix": "A-"}).status_code == 403
     assert api.get("/api/users").status_code == 403
     assert api.get("/api/tokens").status_code == 403
     assert (
@@ -177,3 +204,14 @@ def test_last_used_recorded(client, db_session):
         db_session.query(ApiToken).filter_by(label="tracked").one().last_used_at
         is not None
     )
+
+
+def test_an_accountant_read_of_an_employee_link_is_refused_as_a_read(client):
+    """The portal-token GET is an administrator's even as a read; the
+    accountant's refusal used to say "cannot make this change" on a GET
+    (skeptic pass on #660)."""
+    acct = _bearer(_mint(client, "cpa", "accountant")["token"])
+    r = acct.get("/api/employees/1/portal-token")
+    assert r.status_code == 403, r.text
+    assert "cannot make this change" not in r.json()["detail"]
+    assert "administrator" in r.json()["detail"]

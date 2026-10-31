@@ -1471,6 +1471,8 @@ def import_qb_report(
     adjusting_only: bool = False,
     posted_by: str = None,
     outflow_positive: bool = False,
+    answers: dict | None = None,
+    file_sha: str | None = None,
 ) -> dict:
     """Import any supported QB report CSV, auto-detected by its columns.
 
@@ -1479,6 +1481,11 @@ def import_qb_report(
     receipts, checks and deposits, exact column names distinguish them — the
     deposit signature's bare "Amount" never appears in a check header
     ("Original Amount"/"Paid Amount" are distinct cells). (#62 review)
+
+    ``answers`` (#663) are a person's answers to a Transaction Detail by
+    Account file's problems (qb_ledger_import.read_answers), and
+    ``file_sha`` the file's sha256, which a list of them names; the other
+    reports take neither.
     """
     kind = detect_report_type(csv_text, db)
     base = {
@@ -1561,9 +1568,24 @@ def import_qb_report(
             cols,
             adjusting_only=adjusting_only,
             posted_by=posted_by,
+            answers=answers,
+            file_sha=file_sha,
         )
         base["journals"] = sub.pop("journals", 0)
         base["adjusting"] = sub.pop("adjusting", False)
+        # a file with problems answers with them and posts nothing (#663)
+        for key in (
+            "ready",
+            "problems",
+            "problem_notes",
+            "account_types",
+            "accepted",
+            "left_out",
+            "differences_account",
+            "file_sha256",
+        ):
+            if key in sub:
+                base[key] = sub.pop(key)
     elif kind == "categorized":
         # a categorized bank sheet (#328): posted transactions, not a feed
         from app.services.categorized_import import import_sheet
@@ -1591,11 +1613,10 @@ def import_qb_report(
     base["errors"] = sub.get("errors", [])
     base["warnings"] = sub.get("warnings", [])
     if kind == "ledger" and period:
-        unbalanced = next((e for e in base["errors"] if "does not balance" in e), None)
-        if unbalanced is not None:
-            # the likely reason, on the error the person is looking at
-            i = base["errors"].index(unbalanced)
-            base["errors"][i] = f"{unbalanced}. {long_period_note(period)}"
+        notes = base.get("problem_notes") or {}
+        if "unbalanced" in notes:
+            # the likely reason, beside the transactions it explains
+            notes["unbalanced"] += " " + long_period_note(period)
         else:
             base["warnings"].append(long_period_note(period))
     # the payments it created get their cash-basis lines now (#483)

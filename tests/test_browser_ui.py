@@ -31,6 +31,14 @@ or its Chromium is not installed.
   edge, behind a sideways scrollbar. Opened for an employee with a state in
   Q1 and Q2 at 1280 x 800, in both themes; the state inputs still take the
   keyboard in order.
+- #662: reading an employee's onboarding checklist no longer saves the
+  default one; the read answers it with no task ids. The Onboarding list
+  still reads 0 of 8, and View Checklist saves it before showing it, so
+  every Complete button names a saved task.
+- #663: a Transaction Detail by Account file with problems posts nothing on
+  its first upload; the page lists them by kind with a box to tick each,
+  and Import sends the same file again with the answers. Driven through
+  the real page, its text checked at AA in both themes.
 """
 
 import json
@@ -494,6 +502,85 @@ def test_the_opening_quarters_fit_the_employee_dialog(browser):
         page.close()
 
 
+ONBOARDING_TASKS = (
+    "w4",
+    "i9_section1",
+    "i9_section2",
+    "everify",
+    "direct_deposit",
+    "state_new_hire_report",
+    "policy_acknowledgment",
+    "emergency_contact",
+)
+FIRST_ROW = """() => [...document.querySelector('#page-content tbody tr').cells]
+    .map(c => c.textContent.trim())"""
+COMPLETE_CALLS = """() => [...document.querySelectorAll('#modal-body tbody button')]
+    .map(b => b.getAttribute('onclick'))"""
+
+
+def _onboarding_checklist(saved):
+    return {
+        "employee_id": 1,
+        "employee_name": "Lena Ortiz",
+        "complete": 0,
+        "total": len(ONBOARDING_TASKS),
+        "percent_complete": 0.0,
+        "tasks": [
+            {
+                "id": n if saved else None,
+                "employee_id": 1,
+                "task_type": task,
+                "status": "pending",
+                "signed": False,
+            }
+            for n, task in enumerate(ONBOARDING_TASKS, start=101)
+        ],
+    }
+
+
+def test_an_unsaved_onboarding_checklist_is_saved_when_it_is_opened(browser):
+    """The read answers an employee's default checklist without saving it,
+    its tasks without ids (#662). The list shows it as 0 of 8; View
+    Checklist saves it (POST /onboarding/1/seed) and then shows it, every
+    Complete button naming a saved task."""
+    seeded = []
+
+    def hr(route):
+        req = route.request
+        path = urlsplit(req.url).path
+        if path == "/api/employees":
+            body = [{"id": 1, "first_name": "Lena", "last_name": "Ortiz"}]
+        elif path == "/api/onboarding/1/seed" and req.method == "POST":
+            seeded.append(path)
+            body = _onboarding_checklist(saved=True)
+        elif path == "/api/onboarding/1" and req.method == "GET":
+            body = _onboarding_checklist(saved=bool(seeded))
+        else:
+            return route.fallback()
+        return route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(body)
+        )
+
+    page = _open_raw(browser, 1280, 800)
+    page.route("**/api/employees*", hr)
+    page.route("**/api/onboarding/**", hr)
+    try:
+        page.goto(f"{ORIGIN}/#/hr/onboarding")
+        page.wait_for_function("window.App && document.readyState === 'complete'")
+        page.click("#splash-dismiss")
+        page.wait_for_selector("#page-content tbody tr")
+        assert page.evaluate(FIRST_ROW)[:4] == ["Lena Ortiz", "0", "8", "0%"]
+        assert seeded == []  # the list only reads
+        page.click("#page-content tbody button:has-text('View Checklist')")
+        page.wait_for_selector("#modal-body tbody tr")
+        assert seeded == ["/api/onboarding/1/seed"]
+        assert page.evaluate(COMPLETE_CALLS) == [
+            f"OnboardingPage.completeTask({n}, 1)" for n in range(101, 109)
+        ]
+    finally:
+        page.close()
+
+
 def test_a_sidebar_link_works_after_a_toolbar_button(browser):
     page = _open(browser, 1280, 800, "#/settings")
     try:
@@ -748,6 +835,786 @@ def test_a_report_csv_import_with_errors_says_so(browser):
             "Imported 0 records, 1 error: see the list below",
             "Interoperability — Import finished with errors",
         ]
+    finally:
+        page.close()
+
+
+# ── #663: a ledger file's problems, answered before anything posts ───────
+
+LEDGER_PROBLEMS = {
+    "detected": "ledger",
+    "journals": 0,
+    "duplicates_skipped": 2,
+    "errors": [],
+    "warnings": [],
+    "ready": 5,
+    "file_sha256": "5e" * 32,
+    "problems": [
+        {
+            "kind": "cut_off",
+            "key": "file",
+            "details": [
+                "The lines under Rent come to 1,000.00 debit and 0.00 credit, and "
+                "QuickBooks' total says 1,100.00 and 0.00."
+            ],
+            "text": "The lines under Rent come to 1,000.00 debit and 0.00 credit.",
+        },
+        {
+            "kind": "missing_account",
+            "key": "Card Fees",
+            "path": "Card Fees",
+            "transactions": 2,
+            "text": "Card Fees is not in the chart (2 transactions)",
+        },
+        {
+            "kind": "missing_account",
+            "key": "Office Expense:Postage",
+            "path": "Office Expense:Postage",
+            "transactions": 1,
+            "text": "Office Expense:Postage is not in the chart (1 transaction)",
+        },
+    ]
+    + [
+        {
+            "kind": "unbalanced",
+            "key": f"Check {1001 + n} · 2024-01-{n + 2:02d} · Harbor Properties",
+            "date": f"2024-01-{n + 2:02d}",
+            "type": "Check",
+            "num": str(1001 + n),
+            "name": "Harbor Properties",
+            "amount": "1010.00",
+            "off": "10.00",
+            "rows": [8 + n],
+            "text": f"Check {1001 + n} does not balance",
+        }
+        for n in range(3)
+    ],
+    "problem_notes": {
+        "cut_off": "The file looks cut short or edited. QuickBooks' Save as CSV "
+        "stops a report at 32,768 rows without a warning.",
+        "missing_account": "These accounts are in the report and not in the chart. "
+        "Import the lists first (in QuickBooks: File > Utilities > Export > Lists "
+        "to IIF Files), then this report.",
+        "unbalanced": "These transactions do not balance in the file. Ticked, one "
+        "posts with its difference on 3950 Import Differences.",
+    },
+    "account_types": [
+        {"value": "bank", "label": "Bank", "account_type": "asset"},
+        {"value": "equity", "label": "Equity", "account_type": "equity"},
+        {"value": "expense", "label": "Expense", "account_type": "expense"},
+        {"value": "other_expense", "label": "Other Expense", "account_type": "expense"},
+    ],
+}
+LEDGER_ANSWERED = {
+    "detected": "ledger",
+    "journals": 7,
+    "duplicates_skipped": 2,
+    "errors": [],
+    "warnings": [],
+    "accepted": {"unbalanced": 1, "accounts": ["Card Fees"], "cut_off": True},
+    "left_out": {"unbalanced": 2, "missing_account": 1},
+    "differences_account": "3950 Import Differences",
+}
+
+PROBLEM_LIST = """() => {
+    const box = document.getElementById('qbr');
+    const group = (kind) => box.querySelector(`[data-kind="${kind}"]`);
+    const picks = (kind) => [...box.querySelectorAll(`input.qbr-pick[data-kind="${kind}"]`)];
+    return {
+        groups: [...box.querySelectorAll('section.qbr-group h5')].map(h => h.textContent.trim()),
+        notes: ['cut_off', 'missing_account', 'unbalanced'].map(k => group(k).querySelector('.qbr-note').textContent.trim().slice(0, 40)),
+        ticked: Object.fromEntries(['cut_off', 'missing_account', 'unbalanced'].map(k => [k, picks(k).map(b => b.checked)])),
+        disabled: picks('missing_account').map(b => b.disabled || b.getAttribute('aria-disabled') === 'true'),
+        counts: [...box.querySelectorAll('.qbr-count')].map(c => c.textContent),
+        importable: !document.getElementById('qbr-import').disabled,
+        hint: document.getElementById('qbr-hint').textContent,
+        scrolls: [...box.querySelectorAll('.qbr-scroll')].map(s => getComputedStyle(s).overflowY),
+    };
+}"""
+
+
+def _problem_page(browser, sent, problems=None, answered=None):
+    def answer(route):
+        sent.append(route.request.post_data_buffer or b"")
+        first = problems or LEDGER_PROBLEMS
+        route.fulfill(json=first if len(sent) == 1 else answered or LEDGER_ANSWERED)
+
+    page = _open(browser, 1280, 800, "#/iif")
+    page.route("**/api/csv/import/qb-report", answer)
+    page.wait_for_selector("#qbcsv-file-input", state="attached")
+    page.set_input_files(
+        "#qbcsv-file-input",
+        files=[
+            {
+                "name": "Transaction Detail by Account.csv",
+                "mimeType": "text/csv",
+                "buffer": b"Type,Date,Num\r\n",
+            }
+        ],
+    )
+    page.evaluate("() => IIFPage.importQbReportCsv()")
+    page.wait_for_selector("#qbr")
+    return page
+
+
+def _form_field(body: bytes, name: str) -> str:
+    import re
+
+    m = re.search(
+        rb'name="'
+        + name.encode()
+        + rb'"(?:; filename="[^"]*")?\r\n(?:[^\r\n]+\r\n)*\r\n(.*?)\r\n--',
+        body,
+        re.S,
+    )
+    return m.group(1).decode() if m else None
+
+
+def test_a_ledger_files_problems_are_listed_and_answered(browser):
+    sent = []
+    page = _problem_page(browser, sent)
+    try:
+        seen = page.evaluate(PROBLEM_LIST)
+        assert seen["groups"] == [
+            "The file may be cut off",
+            "2 accounts not in the chart",
+            "3 transactions that do not balance",
+        ]
+        assert seen["notes"] == [
+            "The file looks cut short or edited. Quic",
+            "These accounts are in the report and not",
+            "These transactions do not balance in the",
+        ]
+        assert seen["scrolls"] == ["auto", "auto"]
+        # nothing ticked; an account cannot be without a type; the notice
+        # unticked holds Import, and says why
+        assert seen["ticked"] == {
+            "cut_off": [False],
+            "missing_account": [False, False],
+            "unbalanced": [False, False, False],
+        }
+        assert seen["disabled"] == [True, True]
+        assert seen["counts"] == ["0 of 2 ticked", "0 of 3 ticked"]
+        assert not seen["importable"] and "Import what is there" in seen["hint"]
+        assert _last_toast_and_status(page) == [
+            "toast toast-warning",
+            "Nothing imported yet: 6 problems to decide below",
+            "Interoperability — Choose what to import",
+        ]
+        # every box is named, the type picker too
+        named = page.get_by_role("checkbox", name="Import what is there")
+        assert named.count() == 1
+        account = page.get_by_role("checkbox", name="Make the account Card Fees")
+        page.get_by_role("combobox", name="Type for Card Fees").select_option("expense")
+        assert account.is_enabled() and account.is_checked()
+        # Select all and none, per group: the account with no type stays out
+        unbalanced = page.locator("#qbr [data-kind=unbalanced]")
+        unbalanced.get_by_role("button", name="Select all").click()
+        page.locator("#qbr [data-kind=missing_account]").get_by_role(
+            "button", name="Select all"
+        ).click()
+        seen = page.evaluate(PROBLEM_LIST)
+        assert seen["ticked"]["unbalanced"] == [True, True, True]
+        assert seen["ticked"]["missing_account"] == [True, False]
+        assert seen["counts"] == ["1 of 2 ticked", "3 of 3 ticked"]
+        unbalanced.get_by_role("button", name="Select none").click()
+        assert page.evaluate(PROBLEM_LIST)["ticked"]["unbalanced"] == [False] * 3
+        page.get_by_role(
+            "checkbox",
+            name="Import Check 1002 of Jan 3, 2024, Harbor Properties, off by $10.00 more in debits",
+        ).check()
+        page.get_by_role("checkbox", name="Import what is there").check()
+        assert page.evaluate(PROBLEM_LIST)["importable"]
+        page.evaluate(
+            "() => document.getElementById('toast-container').replaceChildren()"
+        )
+        page.click("#qbr-import")
+        page.wait_for_selector("#qbcsv-import-result .iif-results:not(.qbr)")
+        # focus goes to what was imported, not to the page (#663)
+        assert page.evaluate("() => document.activeElement.id") == "qbcsv-result-title"
+        # the same file again, with the answers
+        assert len(sent) == 2
+        assert _form_field(sent[0], "answers") is None
+        assert _form_field(sent[1], "file") == _form_field(sent[0], "file")
+        assert json.loads(_form_field(sent[1], "answers")) == {
+            "file_sha256": "5e" * 32,
+            "unbalanced": ["Check 1002 · 2024-01-03 · Harbor Properties"],
+            "replaces": [],
+            "accounts": {"Card Fees": "expense"},
+            "cut_off": True,
+        }
+        rows = page.evaluate(
+            """() => [...document.querySelectorAll('#qbcsv-import-result .result-row')]
+                .map(r => r.children.length
+                    ? [...r.children].map(c => c.textContent.trim()).join(' | ')
+                    : r.textContent.trim())"""
+        )
+        assert rows == [
+            "Detected report | Transaction Detail by Account",
+            "Journal entries | 7 imported",
+            "Accepted, the difference on 3950 Import Differences | 1",
+            "Accounts made | 1",
+            "Card Fees",
+            "The file looked cut off; what was in it was imported.",
+            "Left out: did not balance | 2",
+            "Left out: an account not in the chart | 1",
+            "Duplicates skipped | 2",
+        ]
+        assert _last_toast_and_status(page) == [
+            "toast toast-success",
+            "Imported 7 records",
+            "Interoperability — Import complete",
+        ]
+    finally:
+        page.close()
+
+
+FOCUSED = """() => {
+    const el = document.activeElement;
+    return el.getAttribute('aria-label') || el.textContent.trim();
+}"""
+
+
+def test_a_long_problem_list_is_one_stop_for_the_keyboard(browser):
+    """Thousands of transactions must not be thousands of Tab presses on
+    the way to Import: Tab enters the list and leaves it, the arrow keys,
+    Home and End move in it, Space ticks."""
+    sent = []
+    page = _problem_page(browser, sent)
+    try:
+        # Off by says which side is over (#663), here the debits
+        assert page.inner_text(
+            "#qbr [data-kind=unbalanced] tbody tr td:last-child"
+        ) == ("$10.00 more in debits")
+        group = page.locator("#qbr [data-kind=unbalanced]")
+        group.get_by_role("button", name="Select none").focus()
+        page.keyboard.press("Tab")
+        first = "Import Check 1001 of Jan 2, 2024, Harbor Properties, off by $10.00 more in debits"
+        assert page.evaluate(FOCUSED) == first
+        page.keyboard.press("ArrowDown")
+        page.keyboard.press("ArrowDown")
+        page.keyboard.press("Space")
+        third = "Import Check 1003 of Jan 4, 2024, Harbor Properties, off by $10.00 more in debits"
+        assert page.evaluate(FOCUSED) == third
+        assert page.evaluate(PROBLEM_LIST)["ticked"]["unbalanced"] == [
+            False,
+            False,
+            True,
+        ]
+        page.keyboard.press("Home")
+        assert page.evaluate(FOCUSED) == first
+        page.keyboard.press("End")
+        assert page.evaluate(FOCUSED) == third
+        page.keyboard.press("ArrowUp")
+        # out of the list in one press (Import waits on the file's notice),
+        # and back in at the row last used
+        page.keyboard.press("Tab")
+        assert page.evaluate(FOCUSED) == "Cancel"
+        page.keyboard.press("Shift+Tab")
+        assert page.evaluate(FOCUSED) == (
+            "Import Check 1002 of Jan 3, 2024, Harbor Properties, off by $10.00 more in debits"
+        )
+    finally:
+        page.close()
+
+
+def test_the_arrow_keys_draw_the_ring_after_a_click_in_the_list(browser):
+    """2.31.2 gate, NEW-190: on the Mac, a click on a box and then the
+    arrow keys moved the focus with no ring, WebKit keeping :focus-visible
+    off for a focus() after a pointer. A move by the keys marks the list, and
+    the marked list's focused box draws the keyboard's ring; a pointer in
+    the list clears the mark."""
+    sent = []
+    page = _problem_page(browser, sent)
+    try:
+        boxes = page.locator("#qbr [data-kind=unbalanced] tbody input.qbr-pick")
+        boxes.nth(0).click()
+        page.keyboard.press("ArrowDown")
+        state = page.evaluate("""() => {
+                const list = document.querySelector('#qbr [data-kind=unbalanced] .qbr-roving');
+                const box = document.activeElement;
+                const css = getComputedStyle(box);
+                const ring = getComputedStyle(document.documentElement).getPropertyValue('--focus-ring').trim();
+                return {keys: list.dataset.keys || null, style: css.outlineStyle,
+                        width: css.outlineWidth, ring: ring, color: css.outlineColor,
+                        second: box === document.querySelectorAll('#qbr [data-kind=unbalanced] tbody input.qbr-pick')[1]};
+            }""")
+        assert state["second"]
+        assert state["keys"] == "1"
+        assert state["style"] == "solid" and state["width"] == "2px"
+        boxes.nth(2).dispatch_event("pointerdown")
+        assert (
+            page.evaluate(
+                "() => document.querySelector('#qbr [data-kind=unbalanced] .qbr-roving').dataset.keys || null"
+            )
+            is None
+        )
+    finally:
+        page.close()
+
+
+# A file that has whole two transactions the books hold as partial entries
+# (#663): one ticked replaces its entry, one in a reconciliation cannot.
+LEDGER_REPLACES = {
+    "detected": "ledger",
+    "journals": 0,
+    "duplicates_skipped": 7,
+    "errors": [],
+    "warnings": [],
+    "ready": 0,
+    "file_sha256": "ab" * 32,
+    "problems": [
+        {
+            "kind": "closed_period",
+            "key": "closed_period",
+            "closing_date": "2023-12-31",
+            "transactions": 2,
+            "dates": ["2023-12-04", "2023-12-29"],
+            "text": "2 transactions dated on or before the closing date, "
+            "12/31/2023: 12/04/2023 and 12/29/2023.",
+        },
+        {
+            "kind": "replaces",
+            "key": "General Journal 31 · 2024-01-31",
+            "date": "2024-01-31",
+            "type": "General Journal",
+            "num": "31",
+            "name": "Smith",
+            "names": ["Smith"],
+            "amount": "100.00",
+            "off": "0.00",
+            "rows": [4, 7],
+            "journals": 1,
+            "partial": [
+                {
+                    "id": 2,
+                    "date": "2024-01-31",
+                    "num": "31",
+                    "name": "",
+                    "amount": "100.00",
+                    "difference": "-100.00",
+                    "reconciled": False,
+                }
+            ],
+            "voidable": True,
+            "text": "General Journal 31 of 01/31/2024 is in the books as a partial "
+            "entry of 100.00",
+        },
+        {
+            "kind": "replaces",
+            "key": "Check 101 · 2024-01-05",
+            "date": "2024-01-05",
+            "type": "Check",
+            "num": "101",
+            "name": "Acme",
+            "names": ["Acme"],
+            "amount": "60.00",
+            "off": "0.00",
+            "rows": [3, 10],
+            "journals": 1,
+            "partial": [
+                {
+                    "id": 1,
+                    "date": "2024-01-05",
+                    "num": "101",
+                    "name": "Acme",
+                    "amount": "60.00",
+                    # its rent line alone: 60.00 more in debits, so the
+                    # import credited Import Differences 60.00
+                    "difference": "60.00",
+                    "reconciled": True,
+                }
+            ],
+            "voidable": False,
+            "text": "Check 101 of 01/05/2024 is in the books as a partial entry",
+        },
+    ],
+    "problem_notes": {
+        "closed_period": "The books are closed through 12/31/2023, so a "
+        "transaction dated on or before it is left out.",
+        "replaces": "An earlier file had these transactions in part. Ticked, the "
+        "partial entry is voided and this file's posts in its place.",
+    },
+}
+REPLACES_ANSWERED = {
+    "detected": "ledger",
+    "journals": 1,
+    "duplicates_skipped": 7,
+    "errors": [],
+    "warnings": [],
+    "accepted": {"unbalanced": 0, "accounts": [], "cut_off": False, "replaced": 1},
+    "left_out": {
+        "unbalanced": 0,
+        "missing_account": 0,
+        "replaces": 1,
+        "closed_period": 2,
+    },
+}
+
+
+def test_a_transaction_that_replaces_a_partial_entry_is_listed_beside_it(browser):
+    sent = []
+    page = _problem_page(browser, sent, LEDGER_REPLACES, REPLACES_ANSWERED)
+    try:
+        # the closing date's notice comes first, with no box to tick
+        closed = page.locator("#qbr [data-kind=closed_period]")
+        assert closed.locator("h5").inner_text() == (
+            "2 transactions in a closed period, left out"
+        )
+        assert closed.locator("input").count() == 0
+        assert "12/04/2023 and 12/29/2023" in closed.inner_text()
+        group = page.locator("#qbr [data-kind=replaces]")
+        assert group.locator("h5").inner_text() == (
+            "2 transactions that replace a partial entry in the books"
+        )
+        cells = page.evaluate(
+            """() => [...document.querySelectorAll('#qbr [data-kind=replaces] tbody tr')]
+                .map(r => [...r.cells].slice(1).map(c => c.innerText.trim()))"""
+        )
+        assert cells == [
+            [
+                "Jan 31, 2024",
+                "General Journal",
+                "31",
+                "Smith",
+                "$100.00",
+                "Jan 31, 2024 · $100.00",
+                "$100.00 debit",
+            ],
+            [
+                "Jan 5, 2024",
+                "Check",
+                "101",
+                "Acme",
+                "$60.00",
+                "Jan 5, 2024 · $60.00\nin a completed reconciliation",
+                "$60.00 credit",
+            ],
+        ]
+        ok = page.get_by_role(
+            "checkbox",
+            name="Replace the partial entry: General Journal 31 of Jan 31, 2024, "
+            "Smith, $100.00 in this file; in the books Jan 31, 2024 · $100.00, "
+            "with a $100.00 debit on Import Differences",
+        )
+        # the column says what was posted to Import Differences, on which
+        # side: the file's 100.00 more in credits was a debit there
+        header = group.locator("thead th").last.text_content().strip()
+        assert header == "On Import Differences"
+        held = group.locator("input.qbr-pick").nth(1)
+        assert held.get_attribute("aria-disabled") == "true"
+        # the held one takes no tick, by click, by Space or by Select all
+        # (forced: Playwright waits for an aria-disabled box to be enabled)
+        held.click(force=True)
+        assert not held.is_checked()
+        group.get_by_role("button", name="Select all").click()
+        assert ok.is_checked() and not held.is_checked()
+        held.focus()
+        page.keyboard.press("Space")
+        assert not held.is_checked()
+        assert page.locator("#qbr [data-count=replaces]").inner_text() == (
+            "1 of 2 ticked"
+        )
+        page.click("#qbr-import")
+        page.wait_for_selector("#qbcsv-import-result .iif-results:not(.qbr)")
+        assert json.loads(_form_field(sent[1], "answers")) == {
+            "file_sha256": "ab" * 32,
+            "unbalanced": [],
+            "replaces": ["General Journal 31 · 2024-01-31"],
+            "accounts": {},
+            "cut_off": False,
+        }
+        rows = page.evaluate(
+            """() => [...document.querySelectorAll('#qbcsv-import-result .result-row')]
+                .map(r => [...r.children].map(c => c.textContent.trim()).join(' | '))"""
+        )
+        assert rows == [
+            "Detected report | Transaction Detail by Account",
+            "Journal entries | 1 imported",
+            "Replaced: partial entries voided, this file's posted in their place | 1",
+            "Left out: a partial entry in the books kept | 1",
+            "Left out: in a closed period | 2",
+            "Duplicates skipped | 7",
+        ]
+    finally:
+        page.close()
+
+
+# Accounts the chart lacks (#663): a sub-account offered its parent's types
+# only, starting on the parent's, and one under an inactive parent none.
+LEDGER_ACCOUNTS = {
+    "detected": "ledger",
+    "journals": 0,
+    "duplicates_skipped": 0,
+    "errors": [],
+    "warnings": [],
+    "ready": 3,
+    "file_sha256": "cd" * 32,
+    "problems": [
+        {
+            "kind": "missing_account",
+            "key": "Office Supplies:Toner",
+            "path": "Office Supplies:Toner",
+            "transactions": 1,
+            "types": ["expense"],
+            "type": "expense",
+            "why": None,
+            "text": "Office Supplies:Toner is not in the chart (1 transaction)",
+        },
+        {
+            "kind": "missing_account",
+            "key": "Checking:Petty Cash",
+            "path": "Checking:Petty Cash",
+            "transactions": 2,
+            "types": ["bank", "other_current_asset"],
+            "type": "bank",
+            "why": None,
+            "text": "Checking:Petty Cash is not in the chart (2 transactions)",
+        },
+        {
+            "kind": "missing_account",
+            "key": "Old Expenses:Postage",
+            "path": "Old Expenses:Postage",
+            "transactions": 1,
+            "types": [],
+            "type": None,
+            "why": "6990 Old Expenses is inactive and cannot take sub-accounts. "
+            "Reactivate it, or choose another parent.",
+            "text": "Old Expenses:Postage is not in the chart (1 transaction)",
+        },
+    ],
+    "problem_notes": {"missing_account": "These accounts are not in the chart."},
+    "account_types": LEDGER_PROBLEMS["account_types"]
+    + [
+        {
+            "value": "other_current_asset",
+            "label": "Other Current Asset",
+            "account_type": "asset",
+        },
+        {"value": "income", "label": "Income", "account_type": "income"},
+    ],
+}
+
+
+def test_a_sub_account_is_offered_the_types_its_parent_takes(browser):
+    sent = []
+    page = _problem_page(browser, sent, LEDGER_ACCOUNTS)
+    try:
+        choices = page.evaluate(
+            """() => [...document.querySelectorAll('#qbr select.qbr-type')].map(s => ({
+                value: s.value,
+                disabled: s.disabled,
+                offered: [...s.options].filter(o => o.value).map(o => o.value),
+            }))"""
+        )
+        assert choices == [
+            {"value": "expense", "disabled": False, "offered": ["expense"]},
+            {
+                "value": "bank",
+                "disabled": False,
+                "offered": ["bank", "other_current_asset"],
+            },
+            {"value": "", "disabled": True, "offered": []},
+        ]
+        boxes = page.locator("#qbr input.qbr-pick[data-kind=missing_account]")
+        # a type to start on is not a tick: nothing is ticked to start with
+        assert [boxes.nth(i).is_checked() for i in range(3)] == [False] * 3
+        assert [boxes.nth(i).is_enabled() for i in range(3)] == [True, True, False]
+        assert "is inactive and cannot take sub-accounts" in page.inner_text(
+            "#qbr [data-kind=missing_account] tbody tr:nth-child(3)"
+        )
+        page.get_by_role(
+            "checkbox", name="Make the account Office Supplies:Toner"
+        ).check()
+        page.click("#qbr-import")
+        page.wait_for_selector("#qbcsv-import-result .iif-results:not(.qbr)")
+        assert json.loads(_form_field(sent[1], "answers"))["accounts"] == {
+            "Office Supplies:Toner": "expense"
+        }
+    finally:
+        page.close()
+
+
+def test_a_long_problem_list_draws_without_work_per_row_on_the_page(browser):
+    """15,000 rows took 105 s to draw and 134 ms an arrow key (#663). The
+    causes, each now absent: the app's field namer read each new box's
+    `labels` (a walk of the whole document) before its aria-label; every
+    date and amount built an Intl formatter; a box went from static to
+    relative positioning as it took focus (the focus ring's rule), which
+    relaid the whole table out; and each move rewrote every row's
+    tabIndex."""
+    import copy
+
+    big = copy.deepcopy(LEDGER_PROBLEMS)
+    big["problems"] = [p for p in big["problems"] if p["kind"] != "unbalanced"] + [
+        {
+            "kind": "unbalanced",
+            "key": f"Check {1001 + i} · 2024-01-02 · Northwind",
+            "date": "2024-01-02",
+            "type": "Check",
+            "num": str(1001 + i),
+            "name": "Northwind",
+            "amount": "1010.00",
+            "off": "10.00",
+            "rows": [8 + i],
+            "text": f"Check {1001 + i} does not balance",
+        }
+        for i in range(200)
+    ]
+    page = _open(browser, 1280, 800, "#/iif")
+    page.route("**/api/csv/import/qb-report", lambda route: route.fulfill(json=big))
+    page.wait_for_selector("#qbcsv-file-input", state="attached")
+    page.set_input_files(
+        "#qbcsv-file-input",
+        files=[{"name": "t.csv", "mimeType": "text/csv", "buffer": b"x\r\n"}],
+    )
+    try:
+        counts = page.evaluate("""async () => {
+                const counts = { labels: 0, numberFormats: 0, dateStrings: 0 };
+                const labels = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'labels');
+                Object.defineProperty(HTMLInputElement.prototype, 'labels', {
+                    configurable: true,
+                    get() {
+                        // a box named by its aria-label (the notice's is
+                        // named by its own <label>, and read as before)
+                        if (this.classList.contains('qbr-pick') && this.hasAttribute('aria-label')) counts.labels++;
+                        return labels.get.call(this);
+                    },
+                });
+                const NumberFormat = Intl.NumberFormat;
+                Intl.NumberFormat = function (...a) { counts.numberFormats++; return new NumberFormat(...a); };
+                const toDate = Date.prototype.toLocaleDateString;
+                Date.prototype.toLocaleDateString = function (...a) { counts.dateStrings++; return toDate.apply(this, a); };
+                await IIFPage.importQbReportCsv();
+                await new Promise(r => setTimeout(r, 0));  // the namer's turn
+                return counts;
+            }""")
+        assert counts == {"labels": 0, "numberFormats": 0, "dateStrings": 0}
+        assert page.evaluate("""() => getComputedStyle(document.querySelector(
+                '#qbr input.qbr-pick[data-kind=unbalanced]')).position""") == "relative"
+        group = page.locator("#qbr [data-kind=unbalanced]")
+        group.get_by_role("button", name="Select none").focus()
+        page.keyboard.press("Tab")
+        page.evaluate("""() => {
+                window.__touched = new Set();
+                new MutationObserver(records => records.forEach(r => window.__touched.add(r.target)))
+                    .observe(document.getElementById('qbr'), { attributes: true, attributeFilter: ['tabindex'], subtree: true });
+            }""")
+        page.keyboard.press("ArrowDown")
+        page.keyboard.press("End")
+        touched = page.evaluate(
+            """() => new Promise(r => setTimeout(() => r(
+                [...window.__touched].map(b => b.closest('tr').sectionRowIndex)), 0))"""
+        )
+        assert sorted(touched) == [0, 1, 199]
+        assert page.evaluate("() => document.activeElement.tabIndex") == 0
+    finally:
+        page.close()
+
+
+def test_the_missing_accounts_are_one_stop_for_the_keyboard(browser):
+    """As the long lists are (#663): Tab enters the accounts at the row in
+    use, goes on to its type and then out; the arrow keys move between the
+    rows, a box with no type among them."""
+    sent = []
+    page = _problem_page(browser, sent, LEDGER_ACCOUNTS)
+    try:
+        group = page.locator("#qbr [data-kind=missing_account]")
+        group.get_by_role("button", name="Select none").focus()
+        page.keyboard.press("Tab")
+        assert page.evaluate(FOCUSED) == "Make the account Office Supplies:Toner"
+        page.keyboard.press("Tab")
+        assert page.evaluate(FOCUSED) == "Type for Office Supplies:Toner"
+        page.keyboard.press("Tab")
+        assert page.evaluate(FOCUSED) == "Import"  # out of the list
+        page.keyboard.press("Shift+Tab")
+        assert page.evaluate(FOCUSED) == "Type for Office Supplies:Toner"
+        page.keyboard.press("Shift+Tab")
+        page.keyboard.press("ArrowDown")
+        page.keyboard.press("ArrowDown")
+        # the third row's box cannot be ticked, and is still a stop
+        assert page.evaluate(FOCUSED) == "Make the account Old Expenses:Postage"
+        page.keyboard.press("Space")
+        assert not page.locator(
+            "#qbr input[data-key='Old Expenses:Postage']"
+        ).is_checked()
+        page.keyboard.press("ArrowUp")
+        assert page.evaluate(FOCUSED) == "Make the account Checking:Petty Cash"
+        page.keyboard.press("Space")
+        page.keyboard.press("Tab")
+        assert page.evaluate(FOCUSED) == "Type for Checking:Petty Cash"
+        page.keyboard.press("Tab")
+        assert page.evaluate(FOCUSED) == "Import"
+        assert group.locator("[data-count=missing_account]").inner_text() == (
+            "1 of 3 ticked"
+        )
+    finally:
+        page.close()
+
+
+def test_focus_stays_on_import_when_the_answers_are_refused(browser):
+    """The answers refused (the file changed, a type the chart's rules
+    refuse): the list stays, and so does focus, on Import."""
+    sent = []
+
+    def answer(route):
+        sent.append(route.request.post_data_buffer or b"")
+        if len(sent) == 1:
+            route.fulfill(json=LEDGER_ACCOUNTS)
+        else:
+            route.fulfill(
+                status=400,
+                json={
+                    "detail": "The file changed since the list was made; upload it again."
+                },
+            )
+
+    page = _open(browser, 1280, 800, "#/iif")
+    page.route("**/api/csv/import/qb-report", answer)
+    page.wait_for_selector("#qbcsv-file-input", state="attached")
+    page.set_input_files(
+        "#qbcsv-file-input",
+        files=[{"name": "t.csv", "mimeType": "text/csv", "buffer": b"x\r\n"}],
+    )
+    try:
+        page.evaluate("() => IIFPage.importQbReportCsv()")
+        page.wait_for_selector("#qbr")
+        page.click("#qbr-import")
+        # the click itself focuses Import, while the answers are still out
+        # and the button disabled: wait for the refusal to come back (2.31.2
+        # gate: on LabStudio's slower CPU the check ran before it did)
+        page.wait_for_function(
+            "() => document.body.innerText.includes('The file changed since the list was made')"
+            " && !document.getElementById('qbr-import').disabled"
+            " && document.activeElement.id === 'qbr-import'"
+        )
+        assert page.is_visible("#qbr") and page.is_enabled("#qbr-import")
+        assert len(sent) == 2
+    finally:
+        page.close()
+
+
+def test_the_problem_list_reads_at_aa_in_both_themes(browser):
+    from tests.test_theme_contrast import _theme, below_threshold, sweep_of
+
+    sent = []
+    page = _problem_page(browser, sent)
+    try:
+        page.get_by_role("combobox", name="Type for Card Fees").select_option("expense")
+        sweeps = {}
+        for theme in ("light", "dark"):
+            _theme(page, theme)
+            sweeps[(theme, "#/iif problems")] = page.evaluate(
+                sweep_of("document.getElementById('qbr')")
+            )
+        assert all(sweeps.values()), sweeps
+        assert below_threshold(sweeps) == []
+        # Cancel takes the list away; nothing was sent again, and focus goes
+        # back to the button that began it, not to the page (#663)
+        page.get_by_role("button", name="Cancel").click()
+        assert page.inner_html("#qbcsv-import-result") == ""
+        assert len(sent) == 1
+        assert page.evaluate(FOCUSED) == "Import Report CSV"
     finally:
         page.close()
 

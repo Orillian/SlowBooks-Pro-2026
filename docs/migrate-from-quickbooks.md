@@ -140,10 +140,97 @@ Import your lists IIF first, then upload the report under
 **Interoperability → Import from Report CSV**. Every deposit, check,
 transfer, general journal entry and opening balance comes across as a
 journal entry with its date, number, name and memo, and each account ends
-with the balance QuickBooks shows. The file is checked first and refused
-whole if anything is off, and uploading it again posts nothing twice. A
-refusal lists every transaction that is off, however many; **Save the
-list** under the box writes them to a text file to work from.
+with the balance QuickBooks shows. Uploading it again posts nothing twice.
+
+The file is checked first. One that checks out imports at once. A row
+whose date or amount cannot be read refuses the whole file, every such row
+listed: a guess would post a wrong date or amount. A date is read as
+month/day/year (01/31/2024), the way QuickBooks Desktop writes it in the
+United States, and an amount as 1,234.56. QuickBooks Desktop writes its
+dates in the order of Windows' region setting, so a report exported under
+another region's format has day-first dates (20/03/2024) and is refused,
+the sentence above the rows saying the dates look day first: in Windows,
+set the region's format to English (United States) (Control Panel >
+Region), export the report again and import that. One with other problems
+imports nothing yet (since 2.31.2): the page lists the problems, grouped,
+for you to tick the ones to accept and leave the rest:
+
+- **A transaction that does not balance**, with its date, type, number,
+  name, amount and how far off it is, and on which side ("$10.00 more in
+  debits"). Ticked, it posts with the difference
+  on **3950 Import Differences**, an equity account made the first time it
+  is needed, for you or your accountant to clear. Common causes: a report
+  filtered to some accounts (set Filters → Account to All accounts), and a
+  range of more than a year (see *One year per file* below).
+- **An account not in the chart**, once, with how many transactions touch
+  it. Choose its type (QuickBooks' own types, Bank to Other Expense) and it
+  is ticked to be made; the lists IIF is still the better way to bring the
+  chart. A sub-account of an account already in the chart is made by the
+  chart's own rules: it is offered only the types its parent takes (the
+  parent's own, or under a bank, card, A/R or A/P account another of its
+  kind), starting on the parent's, and one the chart cannot take there (an
+  inactive parent, a chain too deep) says why. A transaction that touches
+  an account left unticked is left out.
+- **The file may be cut off**: a section whose lines do not add up to the
+  total QuickBooks printed, a file that ends inside a section or after a
+  section's Total line without the report's closing TOTAL row, or a TOTAL
+  row that is not the sum of the file's lines (a section taken out).
+  Ticked, what is there imports; unticked, nothing does. See *Long
+  histories* below.
+- **Transactions in a closed period**: a notice, with nothing to tick, of
+  how many are dated on or before the closing date and which dates. They
+  are left out and the rest imports; to bring them in, move the closing
+  date (Settings > Closing Date) and import the file again.
+
+Each list has Select all and Select none, and is one stop for Tab however
+long: the arrow keys move from row to row (in the accounts, Tab goes on to
+the row's type first). **Save the list** writes the problems to a text file
+to work from. **Import** sends the same file again
+with your answers: what checks out and what you accepted posts, and the
+result says how many were left out and why.
+
+A transaction you left out comes in from a corrected file later, and what
+posted whole is skipped then. One you accepted with its difference is a
+**partial entry**, and a later file never posts it a second time. A
+transaction in a file is the one in the books when the two have the same
+QuickBooks Type, Num and date and every line of the one, its account and
+amount, is among the other's lines, whatever its name (a cut can lose
+it). A later file that has more of a partial entry's transaction lists it
+among the transactions that **replace a partial entry in the books**, the
+partial entry's date and amount beside it and what it put on Import
+Differences (a debit when the file had more credits, a credit when it had
+more debits); the parts of same-day transactions a cut merged into one
+partial entry are listed together, and the list says when the file's copy
+is still off or is several transactions. A transaction of the same Type, Num and date that holds none of
+its lines (another deposit that day) imports on its own. Ticked, the
+partial entry is voided (its usual reversal, on its own date) and the
+file's copy posts in its place; a copy that still does not balance posts
+as a partial entry again, and a later file that has it whole replaces
+that in turn. Unticked, both stay as they are and the file's copy is left
+out. Nothing is ticked to start with. A cut file whose transactions the
+books already hold (the same cut file again, or the old one after the
+corrected file) posts nothing: they are counted with the duplicates. A
+partial entry in a completed reconciliation is not replaced until that
+reconciliation is undone, and one that was voided, by you or by a
+replacement, no longer counts as imported, so the next file that has that
+transaction brings it in.
+
+In a bank or card register each entry reads as one typed there does:
+QuickBooks' **Name** is the payee, its **Num** the Ref #, each line's
+**Memo** the memo, and its **Type** the Type column ("Check (imported)").
+A number on an imported check, bill payment or paycheck is known to the
+duplicate check number warning; the next check number follows only the
+checks written here. An entry with no name, such as a general journal
+entry or a transfer, has no payee and reads as its memo on the Journal
+Entries page and in reports. Possible Duplicates does not pair two imported
+entries, which QuickBooks already keeps apart, unless one of them is a
+partial entry: that is where a transaction can come in twice. Those two
+pair when they have the same QuickBooks Type, Num and date, whatever their
+payees (a cut file can lose the line that carried the name), or a payee
+alike. Books imported before 2.31.2
+showed "Check 1001 — Name: memo" as the payee; upgrading rewrites those
+entries the same way, and leaves any it cannot read back exactly as they
+were. Either way, uploading the same file again posts nothing twice.
 
 Journal entries carry the history; the A/R and A/P aging read invoices and
 bills, so a company that invoices in QuickBooks brings its open invoices in
@@ -163,16 +250,19 @@ year only, so every earlier sale and expense would arrive without its other
 half and the books would look half-complete. The import reads the period
 QuickBooks prints above the columns and, for a file that covers more than 12
 months, imports it and warns (#568); the warning names the period and says to
-export one year per file, and a file that also fails the "does not balance"
-check carries the same note on that error. A July–June fiscal year is 12
+export one year per file, and in a file whose transactions do not balance
+the same note sits above the list of them. A July–June fiscal year is 12
 months and gets no warning. A transaction's lines share a date, so a
 year never splits one, and a line already posted is skipped on the next file.
 
 **Long histories.** QuickBooks' Save as CSV also stops a report at 32,768 rows
-with no warning: the last section ends without its Total line, and the income
-and expense accounts, which come after the balance sheet accounts, may be
-missing altogether. One year per file keeps most companies under the cap; a
-year that still does not fit can go in two files split at a month end.
+with no warning: the last section ends without its Total line (or the file
+without the report's TOTAL row), and the income and expense accounts, which
+come after the balance sheet accounts, may be missing altogether. The import
+says the file may be cut off, and the transactions missing their other side
+do not balance. One year per file
+keeps most companies under the cap; a year that still does not fit can go in
+two files split at a month end.
 
 ### Time: the Time by Name by Job detail report
 

@@ -80,8 +80,18 @@ const JournalPage = {
         return !!e.voidable && !e.voided;
     },
 
+    // The register an entry was posted from, opened with the entry in its
+    // list (#663): a register opens on the From date it was last read from,
+    // and that can be after this entry's date.
+    async _registerHref(entry) {
+        const id = Number(entry.register_account_id);
+        if (typeof BankingPage === 'undefined' || typeof BankingPage.hrefShowing !== 'function') return `#/banking/${id}`;
+        try { return await BankingPage.hrefShowing(id, entry.date); } catch (e) { return `#/banking/${id}`; }
+    },
+
     async view(id) {
         const entry = await API.get(`/journal/${id}`);
+        const registerHref = entry.register_account_id ? await JournalPage._registerHref(entry) : '';
         let linesHtml = entry.lines.map(l =>
             `<tr><td>${accountLabel(l, l.account_name)}</td>
              <td>${escapeHtml(l.description || '')}</td>
@@ -94,9 +104,9 @@ const JournalPage = {
                 <strong>Date:</strong> ${formatDate(entry.date)}<br>
                 <strong>Description:</strong> ${escapeHtml(entry.description)}<br>
                 ${entry.reference ? `<strong>Reference:</strong> ${escapeHtml(entry.reference)}<br>` : ''}
-                <strong>Type:</strong> ${escapeHtml(sourceWord(entry.source_type))}${entry.is_adjusting ? ' · <strong>Adjusting entry</strong>' : ''}${entry.basis === 'accrual' ? ' · <strong>Accrual only</strong>' : entry.basis === 'cash' ? ' · <strong>Cash only</strong>' : ''}<br>
+                <strong>Type:</strong> ${escapeHtml(sourceWord(entry.source_type, entry.source_kind))}${entry.is_adjusting ? ' · <strong>Adjusting entry</strong>' : ''}${entry.basis === 'accrual' ? ' · <strong>Accrual only</strong>' : entry.basis === 'cash' ? ' · <strong>Cash only</strong>' : ''}<br>
                 ${entry.posted_by ? `<strong>Posted by:</strong> ${escapeHtml(entry.posted_by)}` : ''}
-                ${entry.register_account_id ? `<div id="journal-register-note" style="margin-top:6px; color:var(--gray-500);">Posted from the bank register of <a href="#/banking/${Number(entry.register_account_id)}">${escapeHtml(entry.register_account_name)}</a>; edit it there.</div>` : ''}
+                ${entry.register_account_id ? `<div id="journal-register-note" style="margin-top:6px; color:var(--gray-500);">Posted from the bank register of <a href="${escapeHtml(registerHref)}">${escapeHtml(entry.register_account_name)}</a>; edit it there.</div>` : ''}
                 ${entry.voided ? '<div class="journal-voided" style="color:var(--danger);font-weight:700;margin-top:6px;">Voided</div>' : ''}
             </div>
             <div class="table-container"><table>

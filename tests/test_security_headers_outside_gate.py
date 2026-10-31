@@ -145,7 +145,7 @@ def test_portal_route_specific_referrer_policy_still_applies(
     db_session.add(emp)
     db_session.commit()
 
-    token = client.get(f"/api/employees/{emp.id}/portal-token").json()["portal_token"]
+    token = client.post(f"/api/employees/{emp.id}/portal-token").json()["portal_token"]
     r = client.get(f"/portal/{token}")
     assert r.status_code == 200
     assert r.headers.get("referrer-policy") == "no-referrer"

@@ -543,7 +543,9 @@ const InvoicesPage = {
     async copyPaymentLink(id) {
         let data;
         try {
-            data = await API.get(`/payments/payment-link/${id}`);
+            // POST makes the link when the invoice has none and answers the
+            // same one after (#659); a GET only reads one that exists.
+            data = await API.post(`/payments/payment-link/${id}`);
         } catch (err) { toast(err.message, 'error'); return; }
         // Fetching the link and copying it fail for unrelated reasons, and
         // reporting a clipboard refusal as an API error sent people looking

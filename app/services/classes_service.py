@@ -18,7 +18,8 @@ def uncategorized_class_id(db: Session) -> int:
 
     Kept get-or-create (rather than assuming seed order) so fresh
     databases, migrated desktop files, and the test harness all converge
-    on one canonical row.
+    on one canonical row. For the write paths only: a read asks
+    find_uncategorized_class_id, which never makes it (#662).
     """
     row = db.query(TxnClass).filter(TxnClass.is_system_default).first()
     if row:
@@ -33,6 +34,20 @@ def uncategorized_class_id(db: Session) -> int:
         db.add(row)
     db.flush()
     return row.id
+
+
+def find_uncategorized_class_id(db: Session) -> Optional[int]:
+    """Id of the system-default class, or None while the company has none.
+
+    A read never makes it (#662): untagged lines then carry no class, and
+    the reports name that bucket Uncategorized. A class named Uncategorized
+    stands in for a missing default, as uncategorized_class_id would
+    promote it.
+    """
+    row = db.query(TxnClass.id).filter(TxnClass.is_system_default).first()
+    if row is None:
+        row = db.query(TxnClass.id).filter(TxnClass.name == UNCATEGORIZED_NAME).first()
+    return row[0] if row else None
 
 
 def resolve_class_id(db: Session, name: str) -> Optional[int]:
@@ -52,12 +67,16 @@ def resolve_class_id(db: Session, name: str) -> Optional[int]:
     return row.id if row else None
 
 
-def class_attribution(uncat_id: int):
+def class_attribution(uncat_id: Optional[int]):
     """SQL expression for the class a posted line belongs to: the line's
     own class, else the transaction header's, else the system default.
     Every by-class / by-fund report groups on this so a bill with three
     line classes and a blank header lands in three funds, not in
-    Uncategorized (mirror of jobs_service.job_attribution)."""
+    Uncategorized (mirror of jobs_service.job_attribution). With no
+    default yet (find_uncategorized_class_id is None) an untagged line's
+    class is NULL."""
+    if uncat_id is None:
+        return sqlfunc.coalesce(TransactionLine.class_id, Transaction.class_id)
     return sqlfunc.coalesce(TransactionLine.class_id, Transaction.class_id, uncat_id)
 
 

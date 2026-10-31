@@ -74,6 +74,33 @@ def _journal_sources() -> list[str]:
     ]
 
 
+# Documents whose own Void reverses their posting: the journal's void route
+# sends a caller there instead of reversing the posting a second time
+# (#661). Imported checks and late fees have no document of their own and
+# are still voided here (Possible Duplicates voids a check this way).
+_DOCUMENTS_WITH_A_VOID = frozenset(
+    {
+        "invoice",
+        "invoice_edit",
+        "payment",
+        "bill",
+        "bill_edit",
+        "bill_payment",
+        "expense",
+        "credit_memo",
+        "vendor_credit",
+        "deposit",
+        "bank_entry",
+        "transfer",
+        "cc_charge",
+        "in_kind_gift",
+        "job_deposit",
+        "functional_allocation",
+        "restriction_release",
+    }
+)
+
+
 def _voidable(txn, voided: bool) -> bool:
     """Whether the page may offer Void (the route decides for real): a
     journal of its own that is not a reversal and not voided already. An
@@ -299,6 +326,7 @@ def list_journal_entries(
                 description=header_text(txn),
                 reference=txn.reference or "",
                 source_type=txn.source_type or "",
+                source_kind=txn.source_kind or "",
                 is_adjusting=bool(txn.is_adjusting),
                 posted_by=txn.posted_by or "",
                 basis=_basis_of(txn_lines),
@@ -350,6 +378,7 @@ def get_journal_entry(
         class_id=txn.class_id,
         job_id=txn.job_id,
         source_type=txn.source_type or "",
+        source_kind=txn.source_kind or "",
         is_adjusting=bool(txn.is_adjusting),
         posted_by=txn.posted_by or "",
         basis=_basis_of(txn_lines),
@@ -566,13 +595,11 @@ def update_journal_entry(
     return out
 
 
-@router.post("/{entry_id}/void", response_model=JournalEntryResponse)
-def void_journal_entry(
-    entry_id: int, db: Session = Depends(get_db), request: Request = None
-):
-    txn = db.query(Transaction).filter(Transaction.id == entry_id).first()
-    if not txn:
-        raise HTTPException(status_code=404, detail="Journal entry not found")
+def assert_voidable_kind(txn: Transaction) -> None:
+    """Refuse, with the journal's Void's own answer, an entry that is not
+    the journal's to reverse by what it is: a reversal, a pay run's payroll
+    entry, an item's opening stock and, last, a document's posting
+    (_DOCUMENTS_WITH_A_VOID, #661), in the order the route always asked."""
     if txn.source_type and txn.source_type.endswith("_void"):
         raise HTTPException(status_code=400, detail="Cannot void a reversal entry")
     if txn.source_type == "payroll":
@@ -593,6 +620,90 @@ def void_journal_entry(
             detail="An item's opening stock can't be voided here; correct it "
             "with an inventory adjustment on the item.",
         )
+    if (txn.source_type or "") in _DOCUMENTS_WITH_A_VOID:
+        # A document's posting is voided with the document, whose own void
+        # does the whole job. Most write the reversal under the document's
+        # id, so the posting still looked unreversed below and a void here
+        # took it off the books a second time (#661). The page never offers
+        # Void on one.
+        from app.services.reclassify import source_label
+
+        label = source_label(txn.source_type).lower()
+        # which one, when the posting carries its number (an invoice's
+        # does): "invoice 1001", else "an invoice" (2.31.2 gate)
+        ref = (txn.reference or "").strip()
+        what = (
+            f"{label} {ref}"
+            if ref
+            else ("an " if label[:1] in "aeiou" else "a ") + label
+        )
+        which = f"{label} {ref}" if ref else f"the {label}"
+        raise HTTPException(
+            status_code=400,
+            detail=f"This is {what}'s posting, not a journal entry of its own. "
+            f"Void {which} itself; that reverses this posting with it.",
+        )
+
+
+def assert_not_voided(db: Session, txn: Transaction) -> None:
+    """Refuse, as the journal's Void does, an entry already reversed."""
+    from app.services import qbo_documents
+
+    if qbo_documents.reversed_already(db, txn):
+        raise HTTPException(
+            status_code=400, detail="This journal entry has already been voided."
+        )
+
+
+def reverse_journal_entry(
+    db: Session,
+    txn: Transaction,
+    *,
+    acting: str | None = None,
+    source_type: str = "manual_void",
+) -> Transaction:
+    """A journal entry's void: its mirror image on its own date (every line,
+    whatever its basis), the description and reference it had, an
+    adjustment's reversal an adjustment, and its bank lines handed back to
+    the review queue. The caller commits.
+
+    The journal's Void, and the ledger import replacing a partial entry
+    with more of its transaction from a later file (#663). Whoever calls
+    it, it refuses what Void refuses, with Void's answers (#663): a
+    reversal, a pay run's payroll entry, an item's opening stock, a
+    document's posting, an entry voided already, one on a completed
+    reconciliation and one in a closed period. The route asks the same first, in its own order (who may void
+    sits between them), so its answers are as they were."""
+    assert_voidable_kind(txn)
+    assert_not_voided(db, txn)
+    assert_not_reconciled(txn)
+    check_closing_date(db, txn.date)
+    void_txn = create_journal_entry(
+        db,
+        txn.date,
+        # the reversal of an adjustment says so, and is one (#341)
+        ("VOID adjusting entry: " if txn.is_adjusting else "VOID: ") + header_text(txn),
+        reversing_lines(all_lines(db, txn.id)),
+        source_type=source_type,
+        source_id=txn.id,
+        reference=txn.reference,
+        class_id=txn.class_id,
+        job_id=txn.job_id,
+        is_adjusting=bool(txn.is_adjusting),
+        posted_by=acting,
+    )
+    release_statement_links(db, txn)
+    return void_txn
+
+
+@router.post("/{entry_id}/void", response_model=JournalEntryResponse)
+def void_journal_entry(
+    entry_id: int, db: Session = Depends(get_db), request: Request = None
+):
+    txn = db.query(Transaction).filter(Transaction.id == entry_id).first()
+    if not txn:
+        raise HTTPException(status_code=404, detail="Journal entry not found")
+    assert_voidable_kind(txn)
     acting = _acting(db)
     if _role(request) == ROLE_ACCOUNTANT and (txn.posted_by or "") != acting:
         # An accountant voids only what it posted (#340): the owner's
@@ -605,10 +716,7 @@ def void_journal_entry(
     from app.models.qbo_mapping import QBOMapping
     from app.services import qbo_documents
 
-    if qbo_documents.reversed_already(db, txn):
-        raise HTTPException(
-            status_code=400, detail="This journal entry has already been voided."
-        )
+    assert_not_voided(db, txn)
     from_qbo = txn.source_type in {"qbo_ledger", "qbo_journal"}
     if from_qbo:
         # The QuickBooks Online import's posting of an invoice, sales receipt
@@ -645,27 +753,16 @@ def void_journal_entry(
     assert_not_reconciled(txn)
     check_closing_date(db, txn.date)
 
-    reverse_lines = reversing_lines(all_lines(db, txn.id))
-    if reverse_lines:
+    if all_lines(db, txn.id):
         try:
-            void_txn = create_journal_entry(
+            void_txn = reverse_journal_entry(
                 db,
-                txn.date,
-                # the reversal of an adjustment says so, and is one (#341)
-                ("VOID adjusting entry: " if txn.is_adjusting else "VOID: ")
-                + (txn.description or ""),
-                reverse_lines,
+                txn,
+                acting=acting,
                 # A QuickBooks Online import posting is reversed under its own
                 # name, so a later import knows it was voided here.
                 source_type=f"{txn.source_type}_void" if from_qbo else "manual_void",
-                source_id=txn.id,
-                reference=txn.reference,
-                class_id=txn.class_id,
-                job_id=txn.job_id,
-                is_adjusting=bool(txn.is_adjusting),
-                posted_by=acting,
             )
-            release_statement_links(db, txn)
             if from_qbo:
                 qbo_documents.mark_changed_here(
                     db,

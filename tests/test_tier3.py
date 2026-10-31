@@ -382,7 +382,7 @@ def test_portal_token_url_sets_cookie_and_redirects(client: any, db_session: Ses
     db_session.add(emp)
     db_session.commit()
 
-    token = client.get(f"/api/employees/{emp.id}/portal-token").json()["portal_token"]
+    token = client.post(f"/api/employees/{emp.id}/portal-token").json()["portal_token"]
 
     # Don't follow redirects — we want to inspect the 303 + Set-Cookie itself.
     r = client.get(f"/portal/{token}", follow_redirects=False)
@@ -422,7 +422,7 @@ def test_portal_full_cookieless_navigation_after_claim(
     db_session.add(emp)
     db_session.commit()
 
-    token = client.get(f"/api/employees/{emp.id}/portal-token").json()["portal_token"]
+    token = client.post(f"/api/employees/{emp.id}/portal-token").json()["portal_token"]
 
     # Claim
     r = client.get(f"/portal/{token}")  # default follows redirects
@@ -455,7 +455,7 @@ def test_portal_logout_clears_cookie(client: any, db_session: Session):
     db_session.add(emp)
     db_session.commit()
 
-    token = client.get(f"/api/employees/{emp.id}/portal-token").json()["portal_token"]
+    token = client.post(f"/api/employees/{emp.id}/portal-token").json()["portal_token"]
     client.get(f"/portal/{token}")  # claim
 
     # Logged in
@@ -490,7 +490,7 @@ def test_portal_end_to_end_flow(client: any, db_session: Session, seed_accounts)
     db_session.commit()
 
     # 1. Mint a token via the admin endpoint
-    mint = client.get(f"/api/employees/{emp.id}/portal-token").json()
+    mint = client.post(f"/api/employees/{emp.id}/portal-token").json()
     token = mint["portal_token"]
     assert mint["expires_at"] is not None
 
@@ -590,7 +590,7 @@ def test_portal_access_audit_log_records_success_and_failure(
     db_session.add(emp)
     db_session.commit()
 
-    token = client.get(f"/api/employees/{emp.id}/portal-token").json()["portal_token"]
+    token = client.post(f"/api/employees/{emp.id}/portal-token").json()["portal_token"]
     client.get(f"/portal/{token}")  # claim sets cookie + records access
     # one authed page-view
     client.get("/portal/paystubs", follow_redirects=False)
@@ -717,7 +717,7 @@ def test_portal_cookieless_profile_save_via_cookie(client: any, db_session: Sess
     db_session.add(emp)
     db_session.commit()
 
-    token = client.get(f"/api/employees/{emp.id}/portal-token").json()["portal_token"]
+    token = client.post(f"/api/employees/{emp.id}/portal-token").json()["portal_token"]
     client.get(f"/portal/{token}")  # claim sets the cookie
 
     r = client.post(
@@ -754,7 +754,7 @@ def test_portal_token_generation(client: any, db_session: Session):
     db_session.commit()
 
     # Get initial token
-    r = client.get(f"/api/employees/{emp.id}/portal-token")
+    r = client.post(f"/api/employees/{emp.id}/portal-token")
     assert r.status_code == 200
     data = r.json()
     assert "portal_token" in data
@@ -785,7 +785,7 @@ def test_portal_dashboard_requires_valid_token(client: any, db_session: Session)
     db_session.commit()
 
     # Get valid token
-    r = client.get(f"/api/employees/{emp.id}/portal-token")
+    r = client.post(f"/api/employees/{emp.id}/portal-token")
     token = r.json()["portal_token"]
 
     # Valid token should work (returns HTML)
@@ -815,7 +815,7 @@ def test_portal_w4_update(client: any, db_session: Session):
     db_session.commit()
 
     # Get portal token
-    r = client.get(f"/api/employees/{emp.id}/portal-token")
+    r = client.post(f"/api/employees/{emp.id}/portal-token")
     token = r.json()["portal_token"]
 
     # Update W-4
@@ -861,7 +861,7 @@ def test_portal_bank_account_encryption(client: any, db_session: Session):
     db_session.commit()
 
     # Get portal token
-    r = client.get(f"/api/employees/{emp.id}/portal-token")
+    r = client.post(f"/api/employees/{emp.id}/portal-token")
     token = r.json()["portal_token"]
 
     # Add bank account via portal
@@ -919,7 +919,7 @@ def test_portal_pto_request(client: any, db_session: Session, seed_accounts):
     db_session.commit()
 
     # Get portal token
-    r = client.get(f"/api/employees/{emp.id}/portal-token")
+    r = client.post(f"/api/employees/{emp.id}/portal-token")
     token = r.json()["portal_token"]
 
     # Submit PTO request
@@ -963,7 +963,7 @@ def test_portal_invalid_bank_account_routing(client: any, db_session: Session):
     db_session.commit()
 
     # Get portal token
-    r = client.get(f"/api/employees/{emp.id}/portal-token")
+    r = client.post(f"/api/employees/{emp.id}/portal-token")
     token = r.json()["portal_token"]
 
     # Try to add account with invalid routing (not 9 digits)
@@ -1016,7 +1016,7 @@ def test_tier3_complete_workflow(client: any, db_session: Session, seed_accounts
     assert "number_of_w2s" in w3
 
     # 3. Generate portal token
-    r = client.get(f"/api/employees/{emp.id}/portal-token")
+    r = client.post(f"/api/employees/{emp.id}/portal-token")
     assert r.status_code == 200
     token = r.json()["portal_token"]
 
@@ -1144,7 +1144,7 @@ def test_portal_responses_send_no_referrer_header(client: any, db_session: Sessi
     db_session.add(emp)
     db_session.commit()
 
-    token = client.get(f"/api/employees/{emp.id}/portal-token").json()["portal_token"]
+    token = client.post(f"/api/employees/{emp.id}/portal-token").json()["portal_token"]
     r = client.get(f"/portal/{token}")
     assert r.status_code == 200
     assert r.headers.get("referrer-policy") == "no-referrer"
@@ -1165,7 +1165,7 @@ def test_portal_token_mint_sets_expiry(client: any, db_session: Session):
     db_session.add(emp)
     db_session.commit()
 
-    payload = client.get(f"/api/employees/{emp.id}/portal-token").json()
+    payload = client.post(f"/api/employees/{emp.id}/portal-token").json()
     assert payload["expires_at"] is not None
     expires = datetime.fromisoformat(payload["expires_at"])
     delta = expires - datetime.now(timezone.utc)
@@ -1222,6 +1222,7 @@ def test_portal_token_endpoint_returns_last_used(client: any, db_session: Sessio
     db_session.add(emp)
     db_session.commit()
 
+    client.post(f"/api/employees/{emp.id}/portal-token")
     payload = client.get(f"/api/employees/{emp.id}/portal-token").json()
     assert "last_used_at" in payload
     # Brand-new token — last_used was stamped at mint, so should be ~now.
@@ -1242,7 +1243,7 @@ def test_portal_access_list_endpoint(client: any, db_session: Session):
     db_session.add(emp)
     db_session.commit()
 
-    token = client.get(f"/api/employees/{emp.id}/portal-token").json()["portal_token"]
+    token = client.post(f"/api/employees/{emp.id}/portal-token").json()["portal_token"]
     client.get(f"/portal/{token}")  # claim writes one access row
 
     rows = client.get(f"/api/employees/{emp.id}/portal-access?limit=5").json()

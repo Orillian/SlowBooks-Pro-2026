@@ -121,11 +121,14 @@ def test_no_token_restores_a_backup(client, books, legacy_admin_token):
     made = client.post("/api/backups", json={})
     name = made.json()["filename"]
     keeper = _bearer(_mint(client, "keeper-backups", allow_backups=True)["token"])
+    r = keeper.post("/api/backups/restore", json={"filename": name})
+    assert r.status_code == 403, r.text
+    assert "cannot restore a backup" in r.json()["detail"]
+    # an admin token from before 2.29.0 is refused at the door (#659)
     old_admin = _bearer(legacy_admin_token())
-    for api in (keeper, old_admin):
-        r = api.post("/api/backups/restore", json={"filename": name})
-        assert r.status_code == 403, r.text
-        assert "cannot restore a backup" in r.json()["detail"]
+    r = old_admin.post("/api/backups/restore", json={"filename": name})
+    assert r.status_code == 403, r.text
+    assert "can't be administrators" in r.json()["detail"]
     # nothing was restored, and no safety backup was taken on the way
     assert [b["filename"] for b in client.get("/api/backups").json()] == [name]
 
@@ -195,10 +198,11 @@ def test_a_revoked_token_stays_revoked(client, db_session, legacy_admin_token):
         "Ask an administrator for a new one under Settings, API Tokens."
     )
 
-    # an admin token made before #434 works until revoked, then is done too
+    # an admin token made before #434 is refused (#659) until revoked, then
+    # it is a revoked token like any other
     secret = legacy_admin_token("old-admin")
     old = _bearer(secret)
-    assert old.get("/api/settings").status_code == 200
+    assert old.get("/api/settings").status_code == 403
     row = db_session.query(ApiToken).filter_by(label="old-admin").one()
     client.put(f"/api/tokens/{row.id}", json={"is_active": False})
     assert (

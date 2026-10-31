@@ -227,9 +227,13 @@ _WORDS = {
 _WORD_ENDS = (("_void", "void"), ("_edit", "edit"), ("_apply", "applied"))
 
 
-def source_word(source_type: str | None, words=None) -> str:
+def source_word(source_type: str | None, words=None, kind=None) -> str:
     """ "Invoice", "Bill payment void": a posting's kind as the screen names
-    it; `words` (Terms) renames Invoice and Job for a nonprofit."""
+    it; `words` (Terms) renames Invoice and Job for a nonprofit. `kind` is
+    an import's own word for the row (source_kind, #663): "Check
+    (imported)"."""
+    if kind:
+        return f"{kind} (imported)"
     t = str(source_type or "journal")
     for end, word in _WORD_ENDS:
         if t.endswith(end) and len(t) > len(end):
@@ -364,10 +368,10 @@ def line_scope(db: Session, class_id: int | None = None, job_id: int | None = No
     if class_id is not None:
         from app.services.classes_service import (
             class_attribution,
-            uncategorized_class_id,
+            find_uncategorized_class_id,
         )
 
-        test = class_attribution(uncategorized_class_id(db)) == class_id
+        test = class_attribution(find_uncategorized_class_id(db)) == class_id
     if job_id is not None:
         from app.services.jobs_service import job_attribution
 
@@ -458,10 +462,11 @@ def account_register(
                 "date": txn.date.isoformat(),
                 # a register entry's memo lives on its lines, its payee on
                 # the entry: the Memo column shows the memo when there is
-                # one, else the payee (2.23.5 round 2, W-14)
+                # one, else the payee (2.23.5 round 2, W-14). A QuickBooks
+                # Desktop ledger import is kept the same way (#663).
                 "description": (
                     tl.description
-                    if txn.source_type == "bank_entry"
+                    if txn.source_type in ("bank_entry", "qb_ledger_import")
                     and tl.description
                     and tl.description != payees.get(txn.id, "")
                     else (txn.description or tl.description or "")
@@ -473,6 +478,7 @@ def account_register(
                 "amount": float(delta),
                 "running_balance": float(running),
                 "source_type": txn.source_type,
+                "source_kind": txn.source_kind,
                 "source_id": txn.source_id,
                 "source_link": source_link(txn),
                 "cleared": bool(tl.cleared),

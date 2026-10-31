@@ -5,10 +5,12 @@ The Transaction Detail by Account and categorized-sheet importers cut their
 list at twenty and said "… and 14,070 more", and the person asked whether
 there was a way to see the whole report. There was not. Both lists come
 whole now, as the IIF import's already did (2.23.4 gate, W-6); the page
-counts them and offers Save the list, a text file of every line.
+counts them and offers Save the list, a text file of every line. The
+ledger's are problems to accept or leave out since #663, every one listed.
 """
 
 import io
+import re
 from datetime import date
 import json
 import shutil
@@ -35,6 +37,7 @@ def _ledger_with_one_sided_checks(n):
     rows.append(
         f",Total Operating Checking 4321,,,,,,,,,,,,,,,,,,,,0.00,,{n * 100:.2f},,,,-{n * 100:.2f}"
     )
+    rows.append(f"TOTAL,,,,,,,,,,,,,,,,,,,,,0.00,,{n * 100:.2f},,,,-{n * 100:.2f}")
     return ("\n".join(rows) + "\n").encode("utf-8")
 
 
@@ -56,9 +59,13 @@ def test_the_ledger_report_lists_every_transaction_that_does_not_balance(
     body = r.json()
     assert body["detected"] == "ledger", body
     assert body["journals"] == 0
-    assert len(body["errors"]) == 25, body["errors"][-3:]
-    assert all("does not balance" in e for e in body["errors"])
-    assert not any("more" in e for e in body["errors"])
+    assert len(body["problems"]) == 25, body["problems"][-3:]
+    assert all("does not balance" in p["text"] for p in body["problems"])
+    # every transaction listed, none folded into an "and 12 more" (each
+    # sentence says its own side, "10.00 more in credits", since 2.31.2)
+    assert not any(
+        re.search(r"\band \d[\d,]* more\b", p["text"]) for p in body["problems"]
+    )
 
 
 def test_the_categorized_sheet_lists_every_row_it_could_not_read(

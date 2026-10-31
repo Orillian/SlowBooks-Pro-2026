@@ -53,6 +53,9 @@ def _out(t: ApiToken) -> dict:
         "created_by": t.created_by,
         "created_at": _utc_iso(t.created_at),
         "last_used_at": _utc_iso(t.last_used_at),
+        # An administrator's token from before 2.29.0 is refused on every
+        # request (#659); the list says so, so it gets revoked and replaced.
+        "refused": bool(t.is_active and t.role == ROLE_ADMIN),
     }
 
 
@@ -86,8 +89,8 @@ def create_token(payload: TokenCreate, request: Request, db: Session = Depends(g
         # A token is a program, not a person. Roles are its only scope
         # (#434), and the one that reaches settings, closing dates and
         # company files stays with a signed-in administrator. Tokens
-        # made as admin before 2.29.0 keep working until revoked; none are
-        # made now.
+        # made as admin before 2.29.0 are refused at the door (#659) and
+        # flagged under Settings, API Tokens until revoked.
         raise HTTPException(
             status_code=400,
             detail=(

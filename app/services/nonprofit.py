@@ -45,11 +45,16 @@ from app.models.transactions import Transaction, TransactionLine
 from app.services.accounting import (
     _q,
     create_journal_entry,
+    find_nonprofit_account,
     get_net_assets_with_restriction_id,
     get_net_assets_without_restriction_id,
     reversing_lines,
 )
-from app.services.classes_service import class_attribution, uncategorized_class_id
+from app.services.classes_service import (
+    class_attribution,
+    find_uncategorized_class_id,
+    uncategorized_class_id,
+)
 from app.services.numbering import next_document_number
 
 _PL_EXPENSE_TYPES = (AccountType.EXPENSE, AccountType.COGS)
@@ -85,7 +90,7 @@ def default_period(db: Session, end: Optional[date] = None) -> tuple[date, date]
 def class_expenses(db: Session, class_id: int, start: date, end: date) -> Decimal:
     """Expenses + COGS attributed to the fund in the period (line class first,
     header class second) — what the fund spent, the evidence for a release."""
-    uncat = uncategorized_class_id(db)
+    uncat = find_uncategorized_class_id(db)
     total = (
         db.query(
             sqlfunc.coalesce(
@@ -109,9 +114,12 @@ def class_expenses(db: Session, class_id: int, start: date, end: date) -> Decima
 def class_releases(db: Session, class_id: int, start: date, end: date) -> Decimal:
     """What has already been released for the fund in the period: net
     debits on Net Assets With Donor Restrictions tagged to it (a voided
-    release credits it back, so voids fall out naturally)."""
-    with_id = get_net_assets_with_restriction_id(db)
-    uncat = uncategorized_class_id(db)
+    release credits it back, so voids fall out naturally). Nothing, while
+    the chart has no such account (a read never adds it: #662)."""
+    with_acct = find_nonprofit_account(db, "3400")
+    if with_acct is None:
+        return _q(Decimal("0"))
+    uncat = find_uncategorized_class_id(db)
     total = (
         db.query(
             sqlfunc.coalesce(
@@ -121,7 +129,7 @@ def class_releases(db: Session, class_id: int, start: date, end: date) -> Decima
         .select_from(Transaction)
         .join(TransactionLine, TransactionLine.transaction_id == Transaction.id)
         .filter(
-            TransactionLine.account_id == with_id,
+            TransactionLine.account_id == with_acct.id,
             class_attribution(uncat) == class_id,
             Transaction.date >= start,
             Transaction.date <= end,
@@ -338,7 +346,7 @@ def allocation_pool(
     the source account / fund in the period, grouped by account and by
     the fund it sits in. Empty after a run for the same period — the
     built-in guard against allocating twice."""
-    uncat = uncategorized_class_id(db)
+    uncat = find_uncategorized_class_id(db)
     cls = class_attribution(uncat).label("cls")
     q = (
         db.query(
@@ -392,6 +400,9 @@ def post_functional_allocation(
     end: date,
     memo: Optional[str],
 ) -> FunctionalAllocation:
+    # the pool's untagged lines carry the default class, made here when the
+    # company has none yet (the preview, a read, never makes it: #662)
+    uncategorized_class_id(db)
     pool = allocation_pool(db, rule, start, end)
     if not pool:
         raise ValueError(

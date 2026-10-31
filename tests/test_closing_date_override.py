@@ -136,13 +136,19 @@ def test_an_api_token_cannot_use_the_override(
     cid = _customer(client)
     minted = client.post("/api/tokens", json={"label": "agent", "role": "bookkeeper"})
     assert minted.status_code == 201, minted.text
-    for secret in (minted.json()["token"], legacy_admin_token()):
+    # The daily-books token is refused by the closing date itself; the old
+    # admin token is refused at the door before it gets that far (#659).
+    for secret, sentence in (
+        (minted.json()["token"], "on or before the closing date"),
+        (legacy_admin_token(), "can't be administrators"),
+    ):
         agent = TestClient(app)
         agent.headers["Authorization"] = f"Bearer {secret}"
         r = agent.post(
             "/api/invoices", json=_invoice(cid), headers=_with_password(OVERRIDE_PW)
         )
         assert r.status_code == 403, r.text
+        assert sentence in r.json()["detail"]
 
 
 def test_the_other_closed_period_paths_take_the_override_too(client, seed_accounts):

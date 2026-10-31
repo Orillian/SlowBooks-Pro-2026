@@ -455,6 +455,167 @@ def test_an_imported_check_in_a_closed_period_keeps_the_rule(
     assert "closing date" in r.json()["detail"]
 
 
+# ── QuickBooks Desktop's ledger import (#663) ───────────────────────────
+
+
+def _ledger(db, accounts, day, amount, name, number="1000", category="3100"):
+    """A journal QuickBooks Desktop's Transaction Detail by Account import
+    posted: QuickBooks' Name on the header (none on a transfer)."""
+    amt = Decimal(amount)
+    bank, other = accounts[number].id, accounts[category].id
+    lines = (
+        [
+            {"account_id": other, "debit": -amt, "credit": Decimal("0")},
+            {"account_id": bank, "debit": Decimal("0"), "credit": -amt},
+        ]
+        if amt < 0
+        else [
+            {"account_id": bank, "debit": amt, "credit": Decimal("0")},
+            {"account_id": other, "debit": Decimal("0"), "credit": amt},
+        ]
+    )
+    txn = create_journal_entry(
+        db, day, name, lines, source_type="qb_ledger_import", reference=None
+    )
+    db.commit()
+    return txn
+
+
+def test_two_ledger_import_entries_are_never_a_pair(client, db_session, seed_accounts):
+    """QuickBooks keeps its transactions apart: two transfers with no name,
+    of one amount, a day apart, are two transfers, and so are two checks to
+    one payee."""
+    _ledger(db_session, seed_accounts, date(2026, 3, 2), "-500.00", "")
+    _ledger(db_session, seed_accounts, date(2026, 3, 3), "-500.00", "")
+    _ledger(db_session, seed_accounts, date(2026, 3, 9), "-75.00", "Office Depot")
+    _ledger(db_session, seed_accounts, date(2026, 3, 9), "-75.00", "Office Depot")
+    assert _report(client, seed_accounts)["groups"] == []
+
+
+def test_a_ledger_import_entry_still_pairs_with_a_keyed_one(
+    client, db_session, seed_accounts
+):
+    imported = _ledger(db_session, seed_accounts, date(2026, 3, 2), "-75.00", "Staples")
+    keyed = _keyed(db_session, seed_accounts, date(2026, 3, 3), "-75.00", "STAPLES")
+    (g,) = _report(client, seed_accounts)["groups"]
+    assert g["key"] == f"{imported.id},{keyed.id}"
+    sources = {e["transaction_id"]: e["source"] for e in g["entries"]}
+    assert sources == {imported.id: "migrated", keyed.id: "keyed"}
+
+
+def test_a_ledger_import_entry_still_pairs_with_a_feed_or_other_import(
+    client, db_session, seed_accounts
+):
+    imported = _ledger(db_session, seed_accounts, date(2026, 3, 2), "-30.00", "")
+    added = _keyed(db_session, seed_accounts, date(2026, 3, 2), "-30.00", "")
+    feed = BankAccount(name="Checking feed", account_id=seed_accounts["1000"].id)
+    db_session.add(feed)
+    db_session.flush()
+    line = next(ln for ln in added.lines if ln.account_id == seed_accounts["1000"].id)
+    db_session.add(
+        BankTransaction(
+            bank_account_id=feed.id,
+            date=date(2026, 3, 2),
+            amount=Decimal("-30.00"),
+            payee="",
+            transaction_id=added.id,
+            transaction_line_id=line.id,
+            match_status="added",
+        )
+    )
+    db_session.commit()
+    other = _ledger(db_session, seed_accounts, date(2026, 3, 20), "-90.00", "Acme")
+    online = _migrated(db_session, seed_accounts, date(2026, 3, 21), "-90.00", "Acme")
+    groups = _report(client, seed_accounts)["groups"]
+    assert [g["key"] for g in groups] == [
+        f"{imported.id},{added.id}",
+        f"{other.id},{online.id}",
+    ]
+    assert {e["source"] for e in groups[0]["entries"]} == {"migrated", "imported"}
+
+
+def test_an_imported_anchor_leaves_the_next_imported_entry_out(
+    client, db_session, seed_accounts
+):
+    """A group is its first entry and the entries that match it. Two of the
+    import's never match, so a typed entry between two imported ones pairs
+    with the first; the second stands alone. A typed entry first matches
+    both."""
+    first = _ledger(db_session, seed_accounts, date(2026, 3, 2), "-40.00", "Shell")
+    typed = _keyed(db_session, seed_accounts, date(2026, 3, 3), "-40.00", "Shell")
+    _ledger(db_session, seed_accounts, date(2026, 3, 4), "-40.00", "Shell")
+    (g,) = _report(client, seed_accounts)["groups"]
+    assert g["key"] == f"{first.id},{typed.id}"
+
+    keyed = _keyed(db_session, seed_accounts, date(2026, 4, 1), "-60.00", "Cafe Bleu")
+    a = _ledger(db_session, seed_accounts, date(2026, 4, 2), "-60.00", "Cafe Bleu")
+    b = _ledger(db_session, seed_accounts, date(2026, 4, 3), "-60.00", "Cafe Bleu")
+    groups = _report(client, seed_accounts)["groups"]
+    assert [g["key"] for g in groups][-1] == f"{keyed.id},{a.id},{b.id}"
+
+
+def _imported(db, accounts, day, payee, other, *, num="31", difference=None):
+    """A general journal entry the ledger import posted, as it posts one
+    (#663): QuickBooks' Type and Num, a 100.00 credit to Checking and its
+    other side, on ``other`` (an account number) for a whole entry, or on
+    Import Differences for a partial one, which carries its difference."""
+    from app.services.qb_ledger_import import DIFFERENCE_MEMO, _ensure_differences
+
+    hundred, zero = Decimal("100.00"), Decimal("0")
+    if difference is None:
+        side = {"account_id": accounts[other].id, "description": "write-off"}
+    else:
+        side = {
+            "account_id": _ensure_differences(db).id,
+            "description": DIFFERENCE_MEMO,
+        }
+    txn = create_journal_entry(
+        db,
+        day,
+        payee,
+        [
+            {"account_id": accounts["1000"].id, "debit": zero, "credit": hundred},
+            {**side, "debit": hundred, "credit": zero},
+        ],
+        source_type="qb_ledger_import",
+        reference=num,
+        source_kind="General Journal",
+        source_ref=f"General Journal {num} · {day.isoformat()}",
+    )
+    txn.source_difference = difference
+    db.commit()
+    return txn
+
+
+def test_a_partial_entry_whose_cut_lost_the_payee_pairs_with_the_whole_one(
+    client, db_session, seed_accounts
+):
+    """The reviewer's pair: the whole general journal entry names Smith (its
+    A/R line), and the cut file's partial entry, which had the bank line
+    alone, names no one. A blank payee never pairs with a name; the same
+    QuickBooks Type, Num and Date does, whatever the payees."""
+    day = date(2026, 3, 31)
+    whole = _imported(db_session, seed_accounts, day, "Smith", "1100")
+    partial = _imported(
+        db_session, seed_accounts, day, "", None, difference=Decimal("-100.00")
+    )
+    # another general journal entry of the day, a number of its own
+    _imported(db_session, seed_accounts, day, "", None, num="32", difference=-100)
+    (g,) = _report(client, seed_accounts)["groups"]
+    assert g["key"] == f"{whole.id},{partial.id}"
+    assert {e["payee"] for e in g["entries"]} == {"Smith", ""}
+
+
+def test_two_whole_imported_entries_of_one_type_num_and_date_never_pair(
+    client, db_session, seed_accounts
+):
+    """QuickBooks keeps them apart; only a partial entry pairs by them."""
+    day = date(2026, 3, 31)
+    _imported(db_session, seed_accounts, day, "Smith", "1100")
+    _imported(db_session, seed_accounts, day, "", "1100")
+    assert _report(client, seed_accounts)["groups"] == []
+
+
 # ── roles ────────────────────────────────────────────────────────────────
 
 

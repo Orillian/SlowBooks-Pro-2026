@@ -10,7 +10,19 @@ Two entries on the account are a possible duplicate when:
 - they are on the same side (both money out, or both money in) for the
   same amount, to the cent;
 - their dates are at most WINDOW_DAYS apart;
-- their payees are the same or similar (``similar_payees``).
+- their payees are the same or similar (``similar_payees``);
+- they are not both from QuickBooks Desktop's Transaction Detail by
+  Account import (#663): QuickBooks already keeps its transactions apart
+  (two transfers with no name, of one amount, a day apart), and the import
+  skips a second copy of the same file. An imported entry still pairs with
+  a typed, bank-feed or other entry, and two imported entries pair when
+  either is a partial entry (one posted from a file that did not hold all
+  of the transaction, its difference on Import Differences): that is where
+  a transaction can come in twice. Two such pair when they have the same
+  QuickBooks Type, Num and Date, whatever their payees (a cut can lose the
+  line that carried the name, and a partial entry then has none, or the
+  name of another transaction it merged), or by their payees as any two
+  entries do.
 
 A group is anchored on its first (earliest) entry: every later entry
 within WINDOW_DAYS of that anchor, with a payee similar to the anchor's,
@@ -42,6 +54,7 @@ from app.models.transactions import Transaction, TransactionLine
 from app.services.account_label import account_label
 from app.services.bank_register import account_register
 from app.services.duplicate_detection import normalize_name
+from app.services.entry_text import QB_LEDGER_SOURCE
 
 # "Within a few days of each other": a feed line and the same payment keyed
 # by hand land a day or two apart; a weekly or monthly bill never does.
@@ -251,6 +264,26 @@ def possible_duplicates(
             .filter(BankTransaction.match_status == "added")
         }
     migrated = migrated_sources()
+    # the ledger import's partial entries (#663): two imported entries pair
+    # again when either is one. Each imported entry's QuickBooks Type, Num
+    # and Date, as the import reads them
+    from app.services.qb_ledger_import import type_num_date
+
+    partial: set[int] = set()
+    ttd: dict[int, tuple] = {}
+    for chunk in _chunks(
+        {e["transaction_id"] for e in entries if e["source_type"] == QB_LEDGER_SOURCE}
+    ):
+        for tid, kind, ref, day, difference in db.query(
+            Transaction.id,
+            Transaction.source_kind,
+            Transaction.reference,
+            Transaction.date,
+            Transaction.source_difference,
+        ).filter(Transaction.id.in_(chunk)):
+            ttd[tid] = type_num_date(kind, ref, day)
+            if difference is not None:
+                partial.add(tid)
 
     # same side, same amount; then pairs close enough in date and payee
     buckets: dict[tuple, list] = {}
@@ -285,6 +318,18 @@ def possible_duplicates(
                     break  # rows are date-sorted: nothing later is nearer
                 if used[j] or rows[j]["transaction_id"] == anchor["transaction_id"]:
                     continue
+                if anchor["source_type"] == rows[j]["source_type"] == QB_LEDGER_SOURCE:
+                    a, b = anchor["transaction_id"], rows[j]["transaction_id"]
+                    if a not in partial and b not in partial:
+                        continue
+                    if ttd.get(a) == ttd.get(b):
+                        # the import's rule for one transaction (holds), on
+                        # the register's line: the same Type, Num and Date,
+                        # and this account's line (the bucket's) in both,
+                        # whatever the payees
+                        members.append(rows[j])
+                        used[j] = True
+                        continue
                 if similar_payees(anchor["payee"], rows[j]["payee"]):
                     members.append(rows[j])
                     used[j] = True
@@ -325,6 +370,7 @@ def possible_duplicates(
                     "payee": m["payee"],
                     "memo": m["description"],
                     "source_type": m["source_type"],
+                    "source_kind": m["source_kind"],
                     "source": (
                         "imported"
                         if m["line_id"] in imported

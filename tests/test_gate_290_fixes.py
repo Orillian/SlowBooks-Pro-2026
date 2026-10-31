@@ -222,8 +222,14 @@ def test_fresh_company_has_depreciation_expense_and_a_default_type(
     client, db_session, seed_accounts
 ):
     from app.seed.chart_of_accounts import CHART_OF_ACCOUNTS
+    from app.seed.fixed_assets import ensure_default_asset_type
 
     assert any(a["account_number"] == "6810" for a in CHART_OF_ACCOUNTS)
+    # the type comes with the company at setup (company_service, the seed
+    # script), never from a read (#662)
+    assert client.get("/api/fixed-assets/types").json() == []
+    ensure_default_asset_type(db_session)
+    db_session.commit()
     types = client.get("/api/fixed-assets/types").json()
     assert [t["name"] for t in types] == ["Equipment"]
     t = types[0]
@@ -232,6 +238,8 @@ def test_fresh_company_has_depreciation_expense_and_a_default_type(
     assert expense.name == "Depreciation Expense"
     assert expense.account_type == AccountType.EXPENSE
     # idempotent
+    ensure_default_asset_type(db_session)
+    db_session.commit()
     assert len(client.get("/api/fixed-assets/types").json()) == 1
     assert db_session.query(FixedAssetType).count() == 1
 

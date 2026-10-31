@@ -7,7 +7,8 @@ import could look half-complete and nobody knew why. The period is read from
 the title block QuickBooks prints above the column headers (and the range
 cell under them). A July-June fiscal year spans two calendar years but is 12
 months, so it imports with nothing said; the adjusting-entries import never
-warns; and when the file does not balance the error carries the explanation.
+warns; and when the file does not balance the explanation sits beside the
+transactions that do not (#663).
 """
 
 import io
@@ -162,11 +163,11 @@ def test_a_long_file_that_does_not_balance_carries_the_one_year_note(
     title = f'"November 1, 2023 through December 31, 2024"{pad}\n'
     data = _upload(client, title.encode() + _ledger_with_one_sided_checks(3))
     assert data["journals"] == 0
-    assert len(data["errors"]) == 3
-    assert "does not balance" in data["errors"][0]
-    assert "more than 12 months" in data["errors"][0]
-    assert "one year per file" in data["errors"][0]
-    assert data["warnings"] == []  # said once, on the error
+    assert [p["kind"] for p in data["problems"]] == ["unbalanced"] * 3
+    note = data["problem_notes"]["unbalanced"]
+    assert "do not balance" in note
+    assert "more than 12 months" in note and "one year per file" in note
+    assert data["warnings"] == []  # said once, beside them
     assert _journals(db_session) == 0
 
 
@@ -177,8 +178,9 @@ def test_a_short_file_that_does_not_balance_has_no_note(
     pad = "," * 26
     title = f'"January 1, 2024 through December 31, 2024"{pad}\n'
     data = _upload(client, title.encode() + _ledger_with_one_sided_checks(2))
-    assert len(data["errors"]) == 2
-    assert not any("12 months" in e for e in data["errors"])
+    assert len(data["problems"]) == 2
+    assert "12 months" not in data["problem_notes"]["unbalanced"]
+    assert data["warnings"] == []
 
 
 def test_a_single_year_report_imports_as_before(client, db_session, seed_accounts):

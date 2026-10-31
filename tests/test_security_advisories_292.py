@@ -182,10 +182,12 @@ def test_api_tokens_wear_the_same_rule(client, legacy_admin_token):
     assert keeper.post("/api/payroll/1/nacha", json={}).status_code == 403
     assert keeper.get("/api/employees").status_code == 200
     assert keeper.get("/api/employees").json()[0]["pay_rate"] == 0
-    # no admin token is made since #434; one made before still sees it all
+    # no admin token is made since #434, and one made before is refused
+    # on every request since #659, HR's routes with the rest
     admin = _bearer(legacy_admin_token("agent-admin"))
-    assert admin.get(f"/api/employees/{emp['id']}/portal-token").status_code == 200
-    assert admin.get("/api/employees").json()[0]["pay_rate"] == 25
+    r = admin.get(f"/api/employees/{emp['id']}/portal-token")
+    assert r.status_code == 403 and "can't be administrators" in r.json()["detail"]
+    assert admin.get("/api/employees").status_code == 403
 
 
 # ---------------------------------------------------------------------------
