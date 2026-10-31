@@ -568,6 +568,44 @@ def update_journal_entry(
     return out
 
 
+def assert_voidable_kind(txn: Transaction) -> None:
+    """Refuse, with the journal's Void's own answer, an entry that is not
+    the journal's to reverse by what it is: a reversal, a pay run's payroll
+    entry and an item's opening stock. #661's refusal of a document's
+    posting (_DOCUMENTS_WITH_A_VOID, on another 2.31.2 branch) joins these
+    at the merge, last, as it sits in the route there."""
+    if txn.source_type and txn.source_type.endswith("_void"):
+        raise HTTPException(status_code=400, detail="Cannot void a reversal entry")
+    if txn.source_type == "payroll":
+        # A pay run's posting is reversed by voiding the run (#432), which
+        # also frees its time entries, backs out YTD and marks the stubs.
+        # Reversing it here too would take wages, liabilities and cash off
+        # a second time.
+        raise HTTPException(
+            status_code=400,
+            detail="This is a pay run's payroll entry. Void the pay run "
+            "instead (Payroll, open the run, Void).",
+        )
+    if txn.source_type == "item_opening":
+        # Voiding would remove the value but leave the movement, quantity and
+        # average cost, so valuation would say stock the GL no longer shows.
+        raise HTTPException(
+            status_code=400,
+            detail="An item's opening stock can't be voided here; correct it "
+            "with an inventory adjustment on the item.",
+        )
+
+
+def assert_not_voided(db: Session, txn: Transaction) -> None:
+    """Refuse, as the journal's Void does, an entry already reversed."""
+    from app.services import qbo_documents
+
+    if qbo_documents.reversed_already(db, txn):
+        raise HTTPException(
+            status_code=400, detail="This journal entry has already been voided."
+        )
+
+
 def reverse_journal_entry(
     db: Session,
     txn: Transaction,
@@ -578,11 +616,17 @@ def reverse_journal_entry(
     """A journal entry's void: its mirror image on its own date (every line,
     whatever its basis), the description and reference it had, an
     adjustment's reversal an adjustment, and its bank lines handed back to
-    the review queue. Refused for an entry on a completed reconciliation and
-    one in a closed period, as Void is. The caller commits.
+    the review queue. The caller commits.
 
     The journal's Void, and the ledger import replacing a partial entry
-    with more of its transaction from a later file (#663)."""
+    with more of its transaction from a later file (#663). Whoever calls
+    it, it refuses what Void refuses, with Void's answers (#663): a
+    reversal, a pay run's payroll entry, an item's opening stock, an entry
+    voided already, one on a completed reconciliation and one in a closed
+    period. The route asks the same first, in its own order (who may void
+    sits between them), so its answers are as they were."""
+    assert_voidable_kind(txn)
+    assert_not_voided(db, txn)
     assert_not_reconciled(txn)
     check_closing_date(db, txn.date)
     void_txn = create_journal_entry(
@@ -610,26 +654,7 @@ def void_journal_entry(
     txn = db.query(Transaction).filter(Transaction.id == entry_id).first()
     if not txn:
         raise HTTPException(status_code=404, detail="Journal entry not found")
-    if txn.source_type and txn.source_type.endswith("_void"):
-        raise HTTPException(status_code=400, detail="Cannot void a reversal entry")
-    if txn.source_type == "payroll":
-        # A pay run's posting is reversed by voiding the run (#432), which
-        # also frees its time entries, backs out YTD and marks the stubs.
-        # Reversing it here too would take wages, liabilities and cash off
-        # a second time.
-        raise HTTPException(
-            status_code=400,
-            detail="This is a pay run's payroll entry. Void the pay run "
-            "instead (Payroll, open the run, Void).",
-        )
-    if txn.source_type == "item_opening":
-        # Voiding would remove the value but leave the movement, quantity and
-        # average cost, so valuation would say stock the GL no longer shows.
-        raise HTTPException(
-            status_code=400,
-            detail="An item's opening stock can't be voided here; correct it "
-            "with an inventory adjustment on the item.",
-        )
+    assert_voidable_kind(txn)
     acting = _acting(db)
     if _role(request) == ROLE_ACCOUNTANT and (txn.posted_by or "") != acting:
         # An accountant voids only what it posted (#340): the owner's
@@ -642,10 +667,7 @@ def void_journal_entry(
     from app.models.qbo_mapping import QBOMapping
     from app.services import qbo_documents
 
-    if qbo_documents.reversed_already(db, txn):
-        raise HTTPException(
-            status_code=400, detail="This journal entry has already been voided."
-        )
+    assert_not_voided(db, txn)
     from_qbo = txn.source_type in {"qbo_ledger", "qbo_journal"}
     if from_qbo:
         # The QuickBooks Online import's posting of an invoice, sales receipt
