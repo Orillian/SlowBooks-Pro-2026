@@ -1,4 +1,14 @@
 {
+  "2.31.2": {
+    "title": "A QuickBooks import with no dead ends, and a register that keeps your place",
+    "items": [
+      "A QuickBooks Desktop ledger file with problems is listed with a box to tick each instead of being refused: a transaction that doesn't balance can post with its difference on 3950 Import Differences, a missing account can be created, and a corrected file can replace an earlier partial entry.",
+      "Imported QuickBooks entries read like register entries: the name in Payee, the number in Ref #, and QuickBooks' own type in the Type column.",
+      "The register keeps your dates and your place after you save, the entry row shows with a date set, and your From date is remembered for each account.",
+      "Reading something never changes your books, and the journal's Void sends you to the document whose posting it is.",
+      "Payment and portal links are made with a button, not by reading them, and an API token made as an administrator before 2.29 is refused with what to do instead."
+    ]
+  },
   "2.31.1": {
     "title": "Sub-customers, memorized transactions, and stock that comes back out at its own cost",
     "items": [
